@@ -3,27 +3,36 @@
 -behaviour(gen_server).
 
 %% API
--export([start_link/2, start_link/3, join/1]).
+-export([start_link/2, start_link/3, send_message/2, kill/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
+-include("hyparerl.hrl").
+
 -record(conn, {id     :: node_id(),
-               socket :: socket()}).
+               socket :: inet:socket()}).
 
 %%%===================================================================
 %%% API
 %%%===================================================================
 
+%% @doc Start a tcp-handler that accepts connections from a listen-socket
 start_link(ListenSocket, Myself) ->
     gen_server:start_link(?MODULE, [listen, ListenSocket, Myself], []).
 
-start_link(_ListenSocket, Myself, NodeID) ->
-    gen_server:start_link(?MODULE, [connect, NodeID, Myself], []).
+%% @doc Start a tcp-handler with a started tcp-connection
+start_link(_ListenSocket, Myself, Socket) ->
+    gen_server:start_link(?MODULE, [connect, Socket, Myself], []).
 
-join(Pid) ->
-    gen_server:cast(Pid, join).
+%% @doc Wrapper function over gen_server:cast
+send_message(Pid, Msg) ->
+    gen_server:cast(Pid, Msg).
+
+%% @doc Kill a tcp-handler
+kill(Pid) ->
+    send_message(Pid, kill).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -31,15 +40,8 @@ join(Pid) ->
 
 init([listen, ListenSocket, Myself]) ->
     gen_server:cast(self(), accept),
-    {ok, #conn{id=Myself, socket=ListenSocket}}.
-init([connect, NodeID, Myself]) ->
-    {IPAddr, Port} = NodeID,
-    {MyIPAddr, _MyPort} = Myself,
-    {ok, Socket} = gen_tcp:connect(IPAddr, Port, [{ip, MyIPAddr},
-                                                  binary,
-                                                  {active, once},
-                                                  {packet, 2},
-                                                  {keepalive, true}]),
+    {ok, #conn{id=Myself, socket=ListenSocket}};
+init([connect, Socket, Myself]) ->
     {ok, #conn{id=Myself, socket=Socket}}.
 
 handle_call(_Request, _From, State) ->
@@ -50,22 +52,28 @@ handle_cast(accept, Conn=#conn{socket=ListenSocket}) ->
     {ok, Socket} = gen_tcp:accept(ListenSocket),
     hypar_connect_sup:start_listener(),
     {noreply, Conn#conn{socket=Socket}};
-handle_cast(join, Conn=#conn{id=Myself, socket=Socket}) ->
-    send_msg({join, Myself}, Socket).
+handle_cast({message, Msg}, Conn=#conn{socket=Socket}) ->
+    gen_tcp:send(Socket, term_to_binary(Msg)),
+    {noreply, Conn};
+handle_cast(kill, Conn=#conn{socket=Socket}) ->
+    gen_tcp:close(Socket),
+    {stop, normal, Conn}.
 
-handle_info(_Info, State) ->
-    {noreply, State}.
+handle_info({tcp, _Socket, Data}, Conn) ->
+    Msg = binary_to_term(Data),
+    hypar_man:deliver_msg(Msg),
+    {noreply, Conn};
+handle_info({tcp_closed, _Socket}, Conn) ->
+    {stop, normal, Conn};
+handle_info({tcp_error, _Socket, _Reason}, Conn) ->
+    {stop, normal, Conn}.
 
-terminate(_Reason, _State) ->
+terminate(_Reason, _Conn) ->
     ok.
 
-code_change(_OldVsn, State, _Extra) ->
-    {ok, State}.
+code_change(_OldVsn, Conn, _Extra) ->
+    {ok, Conn}.
 
 %%%===================================================================
 %%% Internal functions
-%%%===================================================================
-
-%% @doc send a message over a TCP-socket
-send_msg(Msg, Socket) ->
-    gen_tcp:send(Socket, term_to_binary(Msg)).
+%%%===================================================================    

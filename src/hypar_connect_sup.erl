@@ -3,7 +3,7 @@
 -behaviour(supervisor).
 
 %% API
--export([start_link/0, start_listener/0, start_connection/1]).
+-export([start_link/0, start_listener/0, start_connection/2]).
 
 %% Supervisor callbacks
 -export([init/1]).
@@ -20,8 +20,24 @@ start_link() ->
 start_listener() ->
     supervisor:start_child(?MODULE, []).
 
-start_connection(Node) ->
-    supervisor:start_child(?MODULE, [Node]).
+start_connection(Node, Myself) ->
+    {IPAddr, Port} = Node,
+    {MyIPAddr, _MyPort} = Myself,
+    %% Maybe add a timeout here? The connect might block I think.
+    Status = gen_tcp:connect(IPAddr, Port, [{ip, MyIPAddr},
+                                            binary,
+                                            {active, once},
+                                            {packet, 2},
+                                            {keepalive, true}]),
+    case Status of
+        {ok, Socket} -> 
+            {ok, Pid} = supervisor:start_child(?MODULE, [Socket]),
+            gen_tcp:controlling_process(Socket, Pid),
+            MRef = monitor(process, Pid),
+            {ok, Pid, MRef};
+        Err ->
+            Err
+    end.
 
 %%%===================================================================
 %%% Supervisor callbacks
