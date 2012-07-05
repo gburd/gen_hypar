@@ -40,32 +40,6 @@ start_link() ->
 deliver_msg(Msg) ->
     gen_server:cast(?SERVER, {Msg, self()}).
 
-%% @doc Send a join message to a connection-handler
-join(ContactNode, Myself) ->
-    {ok, Pid, MRef} = hypar_connect_sup:start_connection(ContactNode, Myself),
-    hypar_connect:send_message(Pid, {join, Myself}),
-    {ContactNode, Pid, MRef}.
-
-%% @doc Send a forward-join message to a connection-handler
-forward_join(Pid, NewNode, TTL) ->
-    hypar_connect:send_message(Pid, {forward_join, NewNode, TTL}).
-
-%% @doc Send a disconnect message to a connection-handler
-disconnect(Pid, MRef) ->
-    hypar_connect:send_message(Pid, disconnect),
-    demonitor(MRef, [flush]).
-
-%% @doc Response to a forward_join propagation. Tells the node who
-%%      initiated the join to setup a connection
-add_me(Node, Myself) ->
-    case hypar_connect_sup:start_connection(Node, Myself) of
-        {ok, Pid, MRef} ->
-            hypar_connect:send_message(Pid, {add_me, Myself}),
-            {Node, Pid, MRef};
-        Err ->
-            Err
-    end.
-
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
@@ -113,12 +87,12 @@ handle_cast({{forward_join, NewNode, TTL}, Pid}, State0=#state{prwl=PRWL}) ->
 handle_cast({disconnect, Pid}, State0=#state{active=Active,
                                              passive=Passive}) ->
     State = case lists:keyfind(Pid, 2, Active) of
-                {Node, Pid, MRef}  ->
-                    demonitor(MRef, [flush]),
-                    hypar_connect:kill(Pid),
+                false -> State0;
+                {Node, Pid, MRef}=Entry  ->
+                    kill(Entry),
                     State0#state{active=lists:keydelete(Pid, 2, Active),
                                  passive=[Node|Passive]};
-                false -> State0
+                
             end,
     {noreply, State};
 handle_cast({{add_me, Node}, Pid}, State) ->
@@ -128,8 +102,15 @@ handle_cast({init, ContactNode}, State=#state{myself=Myself}) ->
     Entry = join(ContactNode, Myself),
     {noreply, State#state{active=[Entry]}}.
 
-handle_info(_Info, State) ->
-    {stop, not_used, State}.
+handle_info({'DOWN', MRef, process, Pid, _Reason},
+            State0=#state{active=Active}) ->
+    case lists:keymember(MRef, 3, Active) of
+        true ->
+            State1 = State0#state{active=lists:keydelete(MRef, 3, Active)},
+            {noreply, find_new_active(State1)};
+        false ->
+            {noreply, State0}
+    end.
 
 handle_call(_Msg, _From, State) ->
     {stop, not_used, State}.
@@ -175,6 +156,71 @@ add_node_passive(Node, State=#state{myself=Myself, passive_size=PassiveSize,
             State#state{passive=Passive};
         false ->
             State
+    end.
+
+%% @doc When a node is thought to have died this function is called.
+%%      It will recursively try to find a new neighbour from the passive
+%%      view until it finds a good one.
+find_new_active(State=#state{active=Active, passive=Passive}) ->
+    Priority = get_priority(Active),
+    {NewActiveEntry, NewPassive} = find_neighbour(Priority, Passive, Myself),
+    State#state{active = [NewActiveEntry|Active], passive=NewPassive}.
+
+find_neighbour(Priority, Passive, Myself) ->
+    find_neighbour(Priority, Passive, Myself, []).
+
+find_neighbour(Priority, Passive, Myself, Tried) ->
+    {Node, PassiveRest} = drop_random(Passive),
+    case hypar_connect_sup:start_connection(Node, Myself) of
+        {Node, Pid, MRef}=Entry ->
+            case try_neigbour(Entry, Priority) of
+                ok -> 
+                    {Entry, PassiveRest ++ Tried};
+                failed ->
+                    kill(Entry),
+                    find_neighbour(Priority, PassiveRest, Myself, [Node|Tried])
+            end;
+        Err ->
+            find_neighbour(Priority, PassiveRest, Myself, Tried)
+    end.                
+
+try_neighbour
+
+get_priority([]) -> high;
+get_priority(_)  -> low.
+
+neighbour_request(Pid, Priority) ->
+    
+
+%% @doc Send a join message to a connection-handler
+join(ContactNode, Myself) ->
+    {ok, Pid, MRef} = hypar_connect_sup:start_connection(ContactNode, Myself),
+    hypar_connect:send_message(Pid, {join, Myself}),
+    {ContactNode, Pid, MRef}.
+
+%% @doc Send a kill message to a connection-handler
+kill({_Node, Pid, MRef}) ->
+    demonitor(MRef, [flush]),
+    hypar_connect:kill(Pid).
+
+%% @doc Send a forward-join message to a connection-handler
+forward_join(Pid, NewNode, TTL) ->
+    hypar_connect:send_message(Pid, {forward_join, NewNode, TTL}).
+
+%% @doc Send a disconnect message to a connection-handler
+disconnect(Pid, MRef) ->
+    hypar_connect:send_message(Pid, disconnect),
+    demonitor(MRef, [flush]).
+
+%% @doc Response to a forward_join propagation. Tells the node who
+%%      initiated the join to setup a connection
+add_me(Node, Myself) ->
+    case hypar_connect_sup:start_connection(Node, Myself) of
+        {ok, Pid, MRef} ->
+            hypar_connect:send_message(Pid, {add_me, Myself}),
+            {Node, Pid, MRef};
+        Err ->
+            Err
     end.
 
 %% @doc Drop a random node from the active view down to the passive view.
