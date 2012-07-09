@@ -3,7 +3,7 @@
 -behaviour(supervisor).
 
 %% API
--export([start_link/0, start_listener/0, start_connection/2]).
+-export([start_link/1, start_listener/0, start_connection/2]).
 
 %% Supervisor callbacks
 -export([init/1]).
@@ -14,8 +14,8 @@
 %%% API functions
 %%%===================================================================
 
-start_link() ->
-    supervisor:start_link({local, ?SERVER}, ?MODULE, []).
+start_link(Myself) ->
+    supervisor:start_link({local, ?SERVER}, ?MODULE, [Myself]).
 
 start_listener() ->
     supervisor:start_child(?MODULE, []).
@@ -53,7 +53,7 @@ init([{IPAddr, Port}=Myself]) ->
                          {hypar_connect, start_link, [ListenSocket, Myself]},
                          temporary, 5000, worker, [hypar_connect]},
     spawn_link(fun empty_listeners/0),
-    {ok, {simple_one_for_one, 5, 10}, [ConnectionWorkers]}.
+    {ok, {{simple_one_for_one, 5, 10}, [ConnectionWorkers]}}.
 
 %%%===================================================================
 %%% Internal functions
