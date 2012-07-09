@@ -32,7 +32,7 @@ send_message(Pid, Msg) ->
     gen_server:cast(Pid, {message, Msg}).
 
 send_sync_message(Pid, Msg) ->
-    gen_server:call(Pid, {message, Msg})
+    gen_server:call(Pid, {message, Msg}).
 
 reply_sync_message(Pid, Ref, Reply) ->
     gen_server:cast(Pid, {reply, Ref, Reply}).
@@ -51,10 +51,11 @@ init([listen, ListenSocket, Myself]) ->
 init([connect, Socket, Myself]) ->
     {ok, #conn{id=Myself, socket=Socket}}.
 
-handle_call({message, Msg}, From, State=#state{sync_msgs=Msgs}) ->
+handle_call({message, Msg}, From, Conn=#conn{socket=Socket,
+                                             sync_msgs=Msgs}) ->
     Ref = make_ref(),
     gen_tcp:send(Socket, term_to_binary({sync, Ref, Msg})),
-    {noreply, State#state{sync_msgs=[{Ref, From}|Msgs]}.
+    {noreply, Conn#conn{sync_msgs=[{Ref, From}|Msgs]}}.
 
 handle_cast(accept, Conn=#conn{socket=ListenSocket}) ->
     {ok, Socket} = gen_tcp:accept(ListenSocket),
@@ -64,7 +65,8 @@ handle_cast({message, Msg}, Conn=#conn{socket=Socket}) ->
     gen_tcp:send(Socket, term_to_binary({async, Msg})),
     {noreply, Conn};
 handle_cast({reply, _, _}=Msg, Conn=#conn{socket=Socket}) ->
-    gen_tcp:send(Socket, term_to_binary(Msg)
+    gen_tcp:send(Socket, term_to_binary(Msg)),
+    {noreply, Conn};
 handle_cast(kill, Conn=#conn{socket=Socket}) ->
     gen_tcp:close(Socket),
     {stop, normal, Conn}.
