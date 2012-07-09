@@ -27,9 +27,9 @@ init([Options]) ->
     Manager = {hypar_man,
                {hypar_man, start_link, [Options]},
                permanent, 5000, worker, [hypar_man]},
-    ConnectionSup = {hypar_connect_sup,
-                     {hypar_connect_sup, start_link, [Myself]},
-                     permanent, 5000, supervisor, [hypar_connect_sup]},
+    ConnectionSup = {connect_sup,
+                     {connect_sup, start_link, [Myself]},
+                     permanent, 5000, supervisor, [connect_sup]},
     {ok, { {one_for_one, 5, 10}, [Manager, ConnectionSup]} }.
 
 %% ===================================================================
