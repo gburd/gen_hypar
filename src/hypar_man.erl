@@ -16,17 +16,18 @@
 
 -define(SERVER, ?MODULE). 
 
-%% State record for the manager
--record(state, {this              :: node(),
-                active_view  = [] :: list(active_ent()),
-                passive_view = [] :: list(node())
-               }).
-
 %% Active entry record
 -record(active_ent, {id   :: node(),
                      pid  :: pid(),
                      mref :: reference()
                     }).
+
+%% State record for the manager
+-record(state, {this              :: node(),
+                active_view  = [] :: list(#active_ent{}),
+                passive_view = [] :: list(node()),
+                options           :: list(option())
+               }).
 
 %%%===================================================================
 %%% API
@@ -44,67 +45,96 @@ init([Options]) ->
     %% Seed the random number generator
     random:seed(now()),
 
-    {init, ContactNode} = 
+    %% Check initial configuration
+    {init, ContactNode} = get_option(init, Options),
     if ContactNode =/= first_node ->
        gen_server:cast(self(), {init, ContactNode})
     end,
-    {ok, #state{this=}}.
+    %% Initialize the state, filter out all options that arent needed
+    {ok, #state{this=myself(Options), options=filter_options(Options)}}.
 
-handle_cast({{join, NewNode}, NewPid},  State0=#state{arwl=ARWL}) ->
+%% Handle an incoming join-message 
+handle_cast({{join, NewNode}, NewPid}, State0=#state{options=Options}) ->
+    %% Construct new active entry
     MRef = monitor(process, NewPid),
-    State = add_node_active({NewNode, NewPid, MRef}, State0),
+    ActiveEntry = new_active(NewNode, NewPid, MRef),
+    State = add_node_active(ActiveEntry, State0),
+
+    %% Forward the join to everyone in the active view
+    ARWL = get_option(arwl, Options),
     ForwardFun = fun({NodeId, Pid}) when NodeId =/= NewNode ->
                          forward_join(Pid, NewNode, ARWL);
                     (_) -> ok
                  end,
-    lists:foreach(ForwardFun, State#state.active),
+    lists:foreach(ForwardFun, State#state.active_view),
     {noreply, State};
-handle_cast({{forward_join, NewNode, TTL}, _Pid}, State0=#state{myself=Myself,
-                                                                active=Active})
+
+%% Handle an incoming forward-join, first case where either TTL is zero or
+%% the active view only has one member
+handle_cast({{forward_join, NewNode, TTL}, _Pid},
+            State0=#state{this=Myself, active_view=Active})
   when TTL =:= 0 orelse length(Active) =:= 1 ->
-    case add_me(NewNode, Myself) of
-        {_NewNode, _NewPid, _MRef}=Entry ->
-            {noreply, add_node_active(Entry, State0)};
-        Err ->
-            ?DEBUG(Err),
-            {noreply, State0}
-    end;
-handle_cast({{forward_join, NewNode, TTL}, Pid}, State0=#state{prwl=PRWL}) ->
+    State = case add_me(NewNode, Myself) of
+                #active_ent{}=Entry ->
+                    add_node_active(Entry, State0);
+                Err ->
+                    ?DEBUG(Err),
+                    State0
+            end,
+    {noreply, State};
+
+%% Catch the rest of the forward joins, maybe adds to passive view and
+%% forwards the message to a random neighbour
+handle_cast({{forward_join, NewNode, TTL}, Pid},
+            State0=#state{active_view=Active, options=Options}) ->
+    PRWL = get_option(prwl, Options),
     State =
         if TTL =:= PRWL ->
                 add_node_passive(NewNode, State0);
            true ->
                 State0
         end,
-    Peers = lists:keydelete(Pid, 2, State#state.active),
-    {_RNode, RPid, _RMRef} = random_elem(Peers),
-    forward_join(RPid, NewNode, TTL-1),
+
+    %% Remove the sender as a possible recipient
+    Peers = lists:keydelete(Pid, 2, Active),
+    Peer = random_elem(Peers),
+    forward_join(Peer, NewNode, TTL-1),
     {noreply, State};
-handle_cast({disconnect, Pid}, State0=#state{active=Active,
-                                             passive=Passive}) ->
+
+%% Handle a disconnect-message. Close the connection and move the node
+%% to the passive view
+handle_cast({disconnect, Pid}, State0=#state{active_view=Active,
+                                             passive_view=Passive}) ->
     State = case lists:keyfind(Pid, 2, Active) of
                 false -> State0;
-                {Node, Pid, _MRef}=Entry  ->
+                #active_ent{}=Entry ->
                     kill(Entry),
-                    State0#state{active=lists:keydelete(Pid, 2, Active),
-                                 passive=[Node|Passive]}
+                    Node = Entry#active_ent.id,
+                    State0#state{active_view=remove_active(Entry, Active),
+                                 passive_view=[Node|Passive]}
             end,
     {noreply, State};
+
+%% Handle an add_me message. This is in response to a propageted join/forward-join.
+%% When a forward-join reaches a node that goes into the active view of the joining node
+%% they open up an active connection. The source node receives messages on this form from
+%% the forward-join-nodes. (Not in protocol but needed for the logic to work.
 handle_cast({{add_me, Node}, Pid}, State) ->
     MRef = monitor(process, Pid),
-    {noreply, add_node_active({Node, Pid, MRef}, State)};
-handle_cast({init, ContactNode}, State=#state{myself=Myself}) ->
+    NewEntry = new_active(Node, Pid, MRef),
+    {noreply, add_node_active(NewEntry, State)};
+handle_cast({init, ContactNode}, State=#state{this=Myself}) ->
     Entry = join(ContactNode, Myself),
-    {noreply, State#state{active=[Entry]}}.
+    {noreply, State#state{active_view=[Entry]}}.
 
 handle_info({'DOWN', MRef, process, _Pid, _Reason},
-            State0=#state{active=Active}) ->
-    case lists:keymember(MRef, 3, Active) of
+            State=#state{active_view=Active0}) ->
+    case lists:keymember(MRef, #active_ent.mref, Active0) of
         true ->
-            State1 = State0#state{active=lists:keydelete(MRef, 3, Active)},
-            {noreply, find_new_active(State1)};
+            Active = remove_active(MRef, Active0),
+            {noreply, find_new_active(State#state{active_view=Active})};
         false ->
-            {noreply, State0}
+            {noreply, State}
     end.
 
 handle_call(_Msg, _From, State) ->
@@ -120,59 +150,96 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
+-spec new_active(Node :: node(), Pid :: pid(), MRef :: reference()) ->
+                        #active_ent{}.
+%% @pure
+%% @doc Create a new active entry for given Node, Pid and MRef
+new_active(Node, Pid, MRef) ->
+    #active_ent{id=Node, pid=Pid, mref=MRef}.
+
+-spec remove_active(Entry :: #active_ent{}, Active :: list(#active_ent{})) ->
+                           list(#active_ent{});
+                   (Node :: node(), Active :: list(#active_ent{})) ->
+                           list(#active_ent{});
+                   (Pid :: pid(), Active :: list(#active_ent{})) ->
+                           list(#active_ent{});
+                   (MRef :: reference(), Active :: list(#active_ent{})) ->
+                           list(#active_ent{}).
+%% @pure
+%% @doc Remove an entry from the active view
+remove_active(#active_ent{id=Node}, Active) ->
+    lists:keydelete(Node, #active_ent.id, Active);
+remove_active(Node=#node{}, Active) ->
+    lists:keydelete(Node, #active_ent.id, Active);
+remove_active(Pid, Active) when is_pid(Pid) ->
+    lists:keydelete(Pid, #active_ent.pid, Active);
+remove_active(MRef, Active) when is_reference(MRef) ->
+    lists:key_dete(MRef, #active_ent.mref, Active).
+
+-spec add_node_active(Entry :: #active_ent{}, State :: #state{}) -> #state{}.
 %% @doc Add a node to an active view, removing a node if necessary.
 %%      The new state is returned. If a node has to be dropped, then
 %%      it is informed via a DISCONNECT message.
-add_node_active({Node, _Pid, _MRef}=Entry,
-                State0=#state{myself=Myself, active=Active,
-                              active_size=ActiveSize}) ->
-    case Node =/= Myself andalso not lists:keymember(Node, 1, Active) of
-        true -> State = case length(Active) >= ActiveSize of
-                            true  -> drop_random_active(State0);
-                            false -> State0
-                        end,
-                State#state{active=[Entry|State#state.active]};
+add_node_active(Entry=#active_ent{id=Node},
+                State0=#state{this=Myself, active_view=Active0,
+                              options=Options}) ->
+    case Node =/= Myself andalso
+        not lists:keymember(Node, #active_ent.id, Active0) of
+        true ->
+            ActiveSize = get_option(active_size, Options),
+            State = 
+                case length(Active0) >= ActiveSize of
+                    true  -> drop_random_active(State0);
+                    false -> State0
+                end,
+            State#state{active_view=[Entry|State#state.active_view]};
         false ->
             State0
     end.
 
+-spec add_node_passive(Node :: node(), State :: #state{}) -> #state{}.
 %% @doc Add a node to the passive view, removing random entries if needed
-add_node_passive(Node, State=#state{myself=Myself, passive_size=PassiveSize,
-                                    active=Active, passive=Passive0}) ->
-    case Node =:= Myself andalso 
-        not lists:keymember(Node, 1, Active) andalso
+add_node_passive(Node, State=#state{this=Myself, options=Options,
+                                    active_view=Active,
+                                    passive_view=Passive0}) ->
+    case Node =/= Myself andalso 
+        not lists:keymember(Node, #active_ent.id, Active) andalso
         not lists:member(Node, Passive0) of
         true ->
+            PassiveSize = get_option(passive_size, Options),
             N = length(Passive0),
-            Passive = case N >= PassiveSize of
-                          true -> drop_n_random(Passive0, N-PassiveSize);
-                          false -> Passive0
-                      end,
-            State#state{passive=Passive};
+            Passive =
+                case N >= PassiveSize of
+                    true -> drop_n_random(Passive0, N-PassiveSize+1);
+                    false -> Passive0
+                end,
+            State#state{passive_view=Passive};
         false ->
             State
     end.
 
+-spec find_new_active(State :: #state{}) -> #state{}.
 %% @doc When a node is thought to have died this function is called.
 %%      It will recursively try to find a new neighbour from the passive
 %%      view until it finds a good one.
-find_new_active(State=#state{myself=Myself, active=Active, passive=Passive}) ->
+find_new_active(State=#state{this=Myself,
+                             active_view=Active, passive_view=Passive}) ->
     Priority = get_priority(Active),
-    {NewActiveEntry, NewPassive} = find_neighbour(Priority, Passive, Myself),
-    State#state{active = [NewActiveEntry|Active], passive=NewPassive}.
+    {NewPeer, NewPassive} = find_neighbour(Priority, Passive, Myself),
+    State#state{active_view=[NewPeer|Active], passive_view=NewPassive}.
 
 find_neighbour(Priority, Passive, Myself) ->
     find_neighbour(Priority, Passive, Myself, []).
 
 find_neighbour(Priority, Passive, Myself, Tried) ->
     {Node, PassiveRest} = drop_random(Passive),
-    case hypar_connect_sup:start_connection(Node, Myself) of
-        {Node, _Pid, _MRef}=Entry ->
-            case try_neighbour(Entry, Priority) of
+    case connect_sup:start_connection(Node, Myself) of
+        #active_ent{}=Peer ->
+            case try_neighbour(Peer, Priority) of
                 ok -> 
-                    {Entry, PassiveRest ++ Tried};
+                    {Peer, PassiveRest ++ Tried};
                 failed ->
-                    kill(Entry),
+                    kill(Peer),
                     find_neighbour(Priority, PassiveRest, Myself, [Node|Tried])
             end;
         _Err ->
@@ -182,47 +249,61 @@ find_neighbour(Priority, Passive, Myself, Tried) ->
 try_neighbour(_Entry, _Priority) ->
     undefined.
 
+-spec get_priority(list(#active_ent{})) -> high | low.
+%% @pure
+%% @doc Find the priority of a new neighbour. If no active entries exist
+%%      the priority is high, otherwise low.
 get_priority([]) -> high;
 get_priority(_)  -> low.
 
-%% @doc Send a join message to a connection-handler
+-spec join(ContactNode :: node(), Myself :: node()) -> #active_ent{}.
+%% @doc Send a join message to a connection-handler, returning the new
+%%      corresponding active entry. Should maybe add some wierd error-handling here.
+%%      It isn't specified what is suppose to happen if the join fails. Retry maybe?
+%%      Maybe an option to specify multiple contactnode and try them in order?
 join(ContactNode, Myself) ->
-    {ok, Pid, MRef} = hypar_connect_sup:start_connection(ContactNode, Myself),
-    hypar_connect:send_message(Pid, {join, Myself}),
-    {ContactNode, Pid, MRef}.
+    {ok, Pid, MRef} = connect_sup:start_connection(ContactNode, Myself),
+    connect:send_message(Pid, {join, Myself}),
+    new_active(ContactNode, Pid, MRef).
 
+-spec kill(Entry :: #active_ent{}) -> ok.
 %% @doc Send a kill message to a connection-handler
-kill({_Node, Pid, MRef}) ->
+kill(#active_ent{pid=Pid, mref=MRef}) ->
     demonitor(MRef, [flush]),
-    hypar_connect:kill(Pid).
+    connect:kill(Pid).
 
+-spec forward_join(Entry :: #active_ent{}, NewNode :: node(),
+                   TTL :: non_neg_integer()) -> ok.                           
 %% @doc Send a forward-join message to a connection-handler
-forward_join(Pid, NewNode, TTL) ->
-    hypar_connect:send_message(Pid, {forward_join, NewNode, TTL}).
+forward_join(#active_ent{pid=Pid}, NewNode, TTL) ->
+    connect:send_message(Pid, {forward_join, NewNode, TTL}).
 
+-spec disconnect(Peer :: #active_ent{}) -> true.
 %% @doc Send a disconnect message to a connection-handler
-disconnect(Pid, MRef) ->
-    hypar_connect:send_message(Pid, disconnect),
+disconnect(#active_ent{pid=Pid, mref=MRef}) ->
+    connect:send_message(Pid, disconnect),
     demonitor(MRef, [flush]).
 
+-spec add_me(Node :: node(), Myself :: node()) -> #active_ent{} | {error, term()}.
 %% @doc Response to a forward_join propagation. Tells the node who
 %%      initiated the join to setup a connection
 add_me(Node, Myself) ->
-    case hypar_connect_sup:start_connection(Node, Myself) of
+    case connect_sup:start_connection(Node, Myself) of
         {ok, Pid, MRef} ->
-            hypar_connect:send_message(Pid, {add_me, Myself}),
-            {Node, Pid, MRef};
+            connect:send_message(Pid, {add_me, Myself}),
+            #active_ent{id=Node, pid=Pid, mref=MRef};
         Err ->
             Err
     end.
 
--spec drop_random_active(state()) -> state().
+-spec drop_random_active(#state{}) -> #state{}.
 %% @doc Drop a random node from the active view down to the passive view.
 %%      Send a DISCONNECT message to the dropped node.
-drop_random_active(State=#state{active=Active0, passive=Passive}) ->
+drop_random_active(State=#state{active_view=Active0, passive_view=Passive}) ->
     {Active, Dropped} = drop_random(Active0),
     disconnect(Dropped),
-    State#state{active=Active, passive=[Dropped#node.id|Passive]}.
+    State#state{active_view=Active,
+                passive_view=[Dropped#active_ent.id|Passive]}.
 
 -spec drop_random(List :: list(T)) -> {T, list(T)}.
 %% @doc Removes a random element from the list, returning
@@ -231,14 +312,15 @@ drop_random(List) ->
     N = random:uniform(length(List)),
     drop_return(N, List, []).
 
--spec drop_return(N :: pos_integer(), List :: list(T)) -> {T, list(T)}.
+-spec drop_return(N :: pos_integer(), List :: list(T), Skipped :: list(T)) ->
+                         {T, list(T)}.
 %% @pure
 %% @doc Drops the N'th element of a List returning both the dropped element
 %%      and the resulting list.
 drop_return(1, [H|T], Skipped) ->
     {H, lists:reverse(Skipped) ++ T};
 drop_return(N, [H|T], Skipped) ->
-    drop_random(N-1, T, [H|Skipped]).
+    drop_return(N-1, T, [H|Skipped]).
 
 -spec drop_n_random(N :: pos_integer(), List :: list(T)) -> list(T).
 %% @doc Removes n random elements from the list
@@ -279,3 +361,17 @@ get_option(Option, Options) ->
 %% @doc Construct "this" node from the options
 myself(Options) ->
     #node{ip=get_option(ip, Options), port=get_option(port, Options)}.
+
+-spec filter_options(Options :: list(option())) -> list(option()).
+%% @pure
+%% @doc Filter out the options that arent needed. Like the ip/port of the node,
+%%      the initial configuration etc.
+filter_options(Options) ->
+    lists:filter(fun needed_option/1, Options).
+
+-spec needed_option(Option :: option()) -> boolean().
+%% @pure
+%% @doc Predicate that specifies which options are needed
+needed_option({Opt,_Val}) ->
+    Set = [active_size, passive_size, arwl, prwl, k_active, k_passive],
+    lists:member(Opt, Set).

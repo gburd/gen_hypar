@@ -28,7 +28,7 @@ start_connection(#node{ip=IPAddr, port=Port}, #node{ip=MyIPAddr}) ->
     Status = gen_tcp:connect(IPAddr, Port, [{ip, MyIPAddr},
                                             {reuseaddr, true},
                                             binary,
-                                            {active, once},
+                                            {active, false},
                                             {packet, 2},
                                             {keepalive, true}]),
     case Status of

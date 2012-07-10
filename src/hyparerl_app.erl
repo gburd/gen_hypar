@@ -18,9 +18,6 @@ stop(_State) ->
 %% ===================================================================
 %% Internal functions
 %% ===================================================================
-
-%% @doc Merges the given configuration in the application source file
-%%      with the default values of parameters missing in the configuration.
 merge_options() ->
     DefFun = fun({Opt, Def}, Acc0) ->
                      Head = case application:get_key(hyparerl, Opt) of

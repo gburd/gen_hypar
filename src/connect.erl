@@ -58,6 +58,7 @@ init([listen, ListenSocket]) ->
     gen_server:cast(self(), accept),
     {ok, #conn{socket=ListenSocket}};
 init([connect, Socket]) ->
+    inet:setopts(Socket, [{active, once}]),
     {ok, #conn{socket=Socket}}.
 
 %% Handle sync-messages
