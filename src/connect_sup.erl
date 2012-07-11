@@ -23,6 +23,8 @@ start_link(Myself) ->
 start_listener() ->
     supervisor:start_child(?MODULE, []).
 
+-spec start_connection(OutNode :: node(), Myself :: node()) ->
+                              {ok, pid(), reference()} | {error, any()}.
 start_connection(#node{ip=IPAddr, port=Port}, #node{ip=MyIPAddr}) ->
     %% Maybe add a timeout here? The connect might block I think.
     Status = gen_tcp:connect(IPAddr, Port, [{ip, MyIPAddr},
@@ -62,11 +64,14 @@ init(#node{ip=IPAddr, port=Port}) ->
 %%% Internal functions
 %%%===================================================================
 
-
+-spec empty_listeners() -> ok.
 %% @doc Start 20 idle listeners
 empty_listeners() ->
-    [start_listener() || _ <- lists:seq(1,20)].
+    [start_listener() || _ <- lists:seq(1,20)],
+    ok.
 
+
+%% TEST CODE
 test_nodes() ->
     IP = {127,0,0,1},
     {#node{ip=IP, port=6000}, #node{ip=IP, port=6001}}.

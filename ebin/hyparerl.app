@@ -12,4 +12,5 @@
                     {kpassive,4},
                     {ipaddr,{127,0,0,1}},
                     {port,6666}]},
-              {modules,[hypar_man,hyparerl_app,hyparerl_sup]}]}.
+              {modules,[connect,connect_sup,hypar_connect,hypar_connect_sup,
+                        hypar_man,hyparerl_app,hyparerl_sup]}]}.

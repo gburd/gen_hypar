@@ -8,7 +8,7 @@
 
 %% API
 -export([start_link/1, start_link/2, send_message/2,
-         send_sync_message/2, reply/3, kill/1]).
+         send_sync_message/2, reply/2, kill/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -19,7 +19,7 @@
 -include("hyparerl.hrl").
 
 -record(conn, {socket :: inet:socket(),
-               sync_ref = none :: {reference(), {pid(), reference()}} | none}).
+               ref :: {pid(), reference()} | none}).
 
 %%%===================================================================
 %%% API
@@ -33,18 +33,22 @@ start_link(ListenSocket) ->
 start_link(_ListenSocket, Socket) ->
     gen_server:start_link(?MODULE, [connect, Socket], []).
 
+-spec send_message(Pid :: pid(), Msg :: any()) -> ok.
 %% @doc Wrapper function over gen_server:cast
 send_message(Pid, Msg) ->
     gen_server:cast(Pid, {async, Msg}).
 
+-spec send_sync_message(Pid :: pid(), Msg :: any()) -> any().
 %% @doc Send a synchrounous message
 send_sync_message(Pid, Msg) ->
     gen_server:call(Pid, {sync, Msg}, ?TIMEOUT).
 
+-spec reply(Pid :: pid(), Reply :: any()) -> ok.
 %% @doc Reply to a sync-message
-reply(Pid, Ref, Reply) ->
-    gen_server:cast(Pid, {reply, Ref, Reply}).
+reply(Pid, Reply) ->
+    gen_server:cast(Pid, {reply, Reply}).
 
+-spec kill(Pid :: pid()) -> ok.
 %% @doc Kill a tcp-handler
 kill(Pid) ->
     gen_server:cast(Pid, kill).
@@ -66,11 +70,10 @@ init([connect, Socket]) ->
 %% As far as I can see now that won't happen since I only will use
 %% sync-messages for the party who initated the connection.
 handle_call({sync, Msg}, From, Conn=#conn{socket=Socket,
-                                          sync_ref=none}) ->
+                                          ref=none}) ->
     io:format("Sending sync-message: ~p~n", [Msg]),
-    Ref = make_ref(),
-    send(Socket, {sync, Ref, Msg}),
-    {noreply, Conn#conn{sync_ref={Ref, From}}}.
+    send(Socket, {sync, Msg}),
+    {noreply, Conn#conn{ref=From}}.
 
 %% Accept an incoming connection
 handle_cast(accept, Conn=#conn{socket=ListenSocket}) ->
@@ -95,13 +98,12 @@ handle_info({tcp, Socket, Data}, Conn) ->
                  {async, Msg} -> 
                      gen_server:cast(hypar_man, {Msg, self()}),
                      {noreply, Conn};
-                 {reply, Ref, Reply} ->
-                     {Ref, From} = Conn#conn.sync_ref,
-                     gen_server:reply(From, Reply),
-                     {noreply, Conn#conn{sync_ref=none}};
-                 {sync, Ref, Msg} ->
+                 {reply, Reply} ->
+                     gen_server:reply(Conn#conn.ref, Reply),
+                     {noreply, Conn#conn{ref=none}};
+                 {sync, Msg} ->
                      Reply = gen_server:call(hypar_man, Msg, ?TIMEOUT),
-                     send(Socket, {reply, Ref, Reply}),
+                     send(Socket, {reply, Reply}),
                      {noreply, Conn}
              end,
     inet:setopts(Socket, [{active, once}]),
@@ -125,6 +127,7 @@ code_change(_OldVsn, Conn, _Extra) ->
 %%% Internal functions
 %%%===================================================================    
 
+-spec send(Socket :: gen_tcp:socket(), Msg :: any()) -> ok | {error, term()}.
 %% Wrapper for gen_tcp:send and term_to_binary.
 send(Socket, Msg) ->
     gen_tcp:send(Socket, term_to_binary(Msg)).
