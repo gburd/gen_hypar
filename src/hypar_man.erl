@@ -14,7 +14,7 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
--define(SERVER, ?MODULE). 
+-define(SERVER, ?MODULE).
 
 -type priority() :: high | low.
 
@@ -28,6 +28,7 @@
 -record(state, {this              :: #node{},
                 active_view  = [] :: list(#peer{}),
                 passive_view = [] :: list(#node{}),
+                last_exchange = [] :: list(#node{}),
                 options           :: list(option())
                }).
 
@@ -48,22 +49,29 @@ init([Options]) ->
     random:seed(now()),
 
     %% Check initial configuration
-    {init, ContactNode} = get_option(init, Options),
-    if ContactNode =/= first_node ->
-       gen_server:cast(self(), {init, ContactNode})
+    ContactNode = get_option(cluster, Options),
+    if ContactNode =/= undefined ->
+       gen_server:cast(self(), {join_cluster, ContactNode})
     end,
-    %% Initialize the state, filter out all options that arent needed
-    {ok, #state{this=myself(Options), options=filter_options(Options)}}.
+    
+    %% Start the timer to initiate the first period of the shuffling,
+    %% randomize it abit to not overflow the network at synchrounos startup
+    Period = get_option(shuffle_period, Options),
+    erlang:send_after(Period, self(), shuffle_time),
 
-%% Handle an incoming join-message 
-handle_cast({{join, NewNode}, NewPid}, State0=#state{options=Options}) ->
+    %% Initialize the state
+    {ok, #state{this=this_node(Options), options=Options}}.
+
+%% Handle an incoming join-message, first time we see NewPid.
+%% Monitor and add to active view.
+handle_cast({{join, NewNode}, NewPid}, State0) ->
     %% Construct new active entry
     MRef = monitor(process, NewPid),
     NewPeer = new_peer(NewNode, NewPid, MRef),
     State = add_node_active(NewPeer, State0),
 
     %% Forward the join to everyone in the active view
-    ARWL = get_option(arwl, Options),
+    ARWL = get_option(arwl, State#state.options),
     ForwardFun = fun(Peer) when Peer#peer.id =/= NewNode ->
                          forward_join(Peer, NewNode, ARWL);
                     (_) -> ok
@@ -99,10 +107,53 @@ handle_cast({{forward_join, NewNode, TTL}, Pid},
 
     %% Remove the sender as a possible recipient
     Peers = lists:keydelete(Pid, #peer.pid, Active),
-    Peer = random_elem(Peers),
+    Peer = misc:random_elem(Peers),
     forward_join(Peer, NewNode, TTL-1),
     {noreply, State};
 
+%% Respond to a shuffle message, either accept the shuffle and reply to it
+%% or propagate the message using a random walk.
+handle_cast({{shuffle, Node, TTL, ExchangeList}, Pid},
+            State=#state{active_view=Active})
+  when TTL-1 > 0 andalso length(Active) > 1 ->
+    %% Random walk, propagate the message to someone except for the sender
+    Peers = lists:keydelete(Pid, #peer.pid, Active),
+    RandomPeer = misc:random_elem(Peers),
+    shuffle(RandomPeer, Node, TTL-1, ExchangeList),
+    {noreply, State};
+handle_cast({{shuffle, Node, _TTL, ExchangeList}, _Pid},
+            State=#state{this=Myself,
+                         active_view=Active,
+                         passive_view=Passive}) ->
+    ReplyList = misc:take_n_random(length(ExchangeList), Passive),
+    case lists:keyfind(Node, #peer.id, Active) of
+        Peer=#peer{} ->
+            shuffle_reply(Peer, ReplyList);
+        false ->
+            case connect_sup:start_connection(Node, Myself) of
+                {ok, Pid, MRef} ->
+                    Peer = new_peer(Node, Pid, MRef),
+                    shuffle_reply(Peer, ReplyList),
+                    kill(Peer);
+                {error, _Reason} ->
+                    io:format("Error connect, skipping shufflereply")
+            end
+    end,
+    {noreply, integrate_exchange_list(State, ExchangeList, ReplyList)};
+%% Take care of a shuffle reply message
+handle_cast({{shuffle_reply, ReplyList}, _Pid},
+            State0=#state{last_exchange=ExchangeList}) ->
+    State = State0#state{last_exchange=[]},
+    {noreply, integrate_exchange_list(State, ExchangeList, ReplyList)};
+
+%% Initate a shuffle procedure
+handle_cast(shuffle, State=#state{this=Myself, active_view=Active,
+                                  options=Options}) ->
+    ExchangeList = create_exchange(State),
+    RandomPeer = misc:random_elem(Active),
+    ARWL = get_option(arwl, Options),
+    shuffle(RandomPeer, Myself, ARWL, ExchangeList),
+    {noreply, State#state{last_exchange=ExchangeList}};
 %% Handle a disconnect-message. Close the connection and move the node
 %% to the passive view
 handle_cast({disconnect, Pid}, State0=#state{active_view=Active,
@@ -127,6 +178,7 @@ handle_cast({{add_me, Node}, Pid}, State) ->
 handle_cast({init, ContactNode}, State=#state{this=Myself}) ->
     Peer = join(ContactNode, Myself),
     {noreply, State#state{active_view=[Peer]}}.
+
 %% Handle a neighbour-request. If the priority is set low the request is only
 %% accepted if there is space in the active view. Otherwise it's rejected.
 %% If the priority is high then the request is always accepted, even if one
@@ -147,6 +199,8 @@ handle_call({neighbour, Node, high}, {Pid, _Ref}, State) ->
     NewPeer = new_peer(Node, Pid, MRef),
     {reply, ok, add_node_active(NewPeer, State)}.
 
+%% A monitor has gone down. This is equal to the connection has gone down.
+%% Thus we remove the process/node from the active view and try to find a new.
 handle_info({'DOWN', MRef, process, _Pid, _Reason},
             State=#state{active_view=Active0}) ->
     case lists:keymember(MRef, #peer.mref, Active0) of
@@ -166,6 +220,51 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+
+-spec create_exchange(State :: #state{}) -> list(#node{}).
+%% @doc Create the exchange list used in a shuffle. 
+create_exchange(#state{active_view=Active, passive_view=Passive,
+                       this=Myself, options=Options}) ->
+    KActive  = get_option(kactive, Options),
+    KPassive = get_option(kpassive, Options),
+    
+    RandomActive  = misc:take_n_random(KActive, Active),
+    RandomPassive = misc:take_n_random(KPassive, Passive),
+    [Myself] ++ RandomActive ++ RandomPassive.
+
+-spec integrate_exchange_list(State :: #state{}, 
+                              ExchangeList :: list(#node{}),
+                              ReplyList :: list(#node{})) ->
+                                     #state{}.
+%% @doc Takes the exchange-list and integrates it into the state. Removes nodes
+%%      that are already in active/passive view from the list. If the passive view
+%%      are full, start by dropping elements from ReplyList then random elements.
+integrate_exchange_list(State=#state{this=Myself, active_view=Active,
+                                     passive_view=Passive, options=Options},
+                        ExchangeList0, ReplyList) ->
+    Fun = fun(X) ->
+                  X =/= Myself andalso
+                      not lists:keymember(X, #peer.id, Active) andalso
+                      not lists:member(X, Passive) end,
+    ExchangeList = lists:filter(Fun, ExchangeList0),
+    PassiveSize = get_option(passive_size, Options),
+    SlotsNeeded = length(ExchangeList) - PassiveSize + length(Passive),
+    NewPassive = free_slots(SlotsNeeded, Passive, ReplyList),
+    State#state{passive_view=ExchangeList ++ NewPassive}.
+            
+-spec free_slots(SlotsNeeded :: integer(), Passive :: list(#node{}),
+                 ReplyList :: list(#node{})) -> list(#node{}).
+%% @doc Free up slots in the passive list, start by removing elements
+%%      from the ReplyList, then remove at random.
+free_slots(I, Passive, _ReplyList) when I =< 0 ->
+    Passive;
+free_slots(I, Passive, []) ->
+    misc:drop_n_random(I, Passive);
+free_slots(I, Passive, [H|T]) ->
+    case lists:member(H, Passive) of
+        true  -> free_slots(I-1, lists:delete(H, Passive), T);
+        false -> free_slots(I, Passive, T)
+    end.
 
 -spec new_peer(Node :: #node{}, Pid :: pid(), MRef :: reference()) ->
                       #peer{}.
@@ -227,7 +326,7 @@ add_node_passive(Node, State=#state{this=Myself, options=Options,
             N = length(Passive0),
             Passive =
                 case N >= PassiveSize of
-                    true -> drop_n_random(Passive0, N-PassiveSize+1);
+                    true -> misc:drop_n_random(Passive0, N-PassiveSize+1);
                     false -> Passive0
                 end,
             State#state{passive_view=Passive};
@@ -249,7 +348,7 @@ find_neighbour(Priority, Passive, Myself) ->
     find_neighbour(Priority, Passive, Myself, []).
 
 find_neighbour(Priority, Passive, Myself, Tried) ->
-    {Node, PassiveRest} = drop_random(Passive),
+    {Node, PassiveRest} = misc:drop_random(Passive),
     case connect_sup:start_connection(Node, Myself) of
         #peer{}=Peer ->
             case neighbour(Peer, Myself, Priority) of
@@ -263,6 +362,16 @@ find_neighbour(Priority, Passive, Myself, Tried) ->
             ?DEBUG(Err),
             find_neighbour(Priority, PassiveRest, Myself, Tried)
     end.
+
+-spec shuffle(Peer :: #peer{}, Myself :: #node{}, TTL :: non_neg_integer(), ExchangeList :: list(#node{})) -> ok.
+%% @doc Send a shuffle message to a peer
+shuffle(Peer, Myself, TTL, ExchangeList) ->
+    connect:send_message(Peer#peer.pid, {shuffle, Myself, TTL, ExchangeList}).
+
+-spec shuffle_reply(Peer :: #peer{}, ReplyList :: list(#node{})) -> ok.
+%% @doc Send a shuffle-reply message to a peer
+shuffle_reply(Peer, ReplyList) ->
+    connect:send_message(Peer#peer.pid, {shuffle_reply, ReplyList}).
 
 -spec neighbour(Peer :: #peer{}, Myself :: #node{}, Priority :: priority()) ->
                        ok | failed.
@@ -321,78 +430,41 @@ add_me(Node, Myself) ->
 %% @doc Drop a random node from the active view down to the passive view.
 %%      Send a DISCONNECT message to the dropped node.
 drop_random_active(State=#state{active_view=Active0, passive_view=Passive}) ->
-    {Active, Dropped} = drop_random(Active0),
+    {Active, Dropped} = misc:drop_random(Active0),
     disconnect(Dropped),
     State#state{active_view=Active,
                 passive_view=[Dropped#peer.id|Passive]}.
 
--spec drop_random(List :: list(T)) -> {T, list(T)}.
-%% @doc Removes a random element from the list, returning
-%%      a new list and the dropped element.
-drop_random(List) ->
-    N = random:uniform(length(List)),
-    drop_return(N, List, []).
-
--spec drop_return(N :: pos_integer(), List :: list(T), Skipped :: list(T)) ->
-                         {T, list(T)}.
-%% @pure
-%% @doc Drops the N'th element of a List returning both the dropped element
-%%      and the resulting list.
-drop_return(1, [H|T], Skipped) ->
-    {H, lists:reverse(Skipped) ++ T};
-drop_return(N, [H|T], Skipped) ->
-    drop_return(N-1, T, [H|Skipped]).
-
--spec drop_n_random(N :: pos_integer(), List :: list(T)) -> list(T).
-%% @doc Removes n random elements from the list
-drop_n_random(N, List) ->
-    drop_n_random(List, N, length(List)).
-
-%% @doc Helper-function for drop_n_random/2
-drop_n_random(List, 0, _Length) ->
-    List;
-drop_n_random(_List, _N, 0) ->
-    [];
-drop_n_random(List, N, Length) ->
-    I = random:uniform(Length),
-    drop_n_random(drop_nth(I, List), N-1, Length-1).
-
--spec drop_nth(N :: pos_integer(), List :: list(T)) -> list(T).
-%% @pure
-%% @doc Drop the n'th element of a list, return both list and 
-%%      dropped element
-drop_nth(_N, []) -> [];
-drop_nth(1, [_H|Tail]) -> Tail;
-drop_nth(N, [H|Tail]) -> [H|drop_nth(N-1, Tail)].
-
--spec random_elem(List :: list(T)) -> T.
-%% @doc Get a random element of a list
-random_elem(List) ->
-    I = random:uniform(length(List)),
-    lists:nth(I, List).
+%% -------------------------
+%% Options related functions
+%% -------------------------
 
 -spec get_option(Option :: atom(), Options :: list(option())) -> option().
 %% @pure
-%% @doc Wrapper for keyfind.
+%% @doc Get options, if undefined fallback to default.
 get_option(Option, Options) ->
-    lists:keyfind(Option, 1, Options).
+    case proplists:get_value(Option, Options) of
+        undefined ->
+            proplists:get_value(Option, default_options);
+        Val ->
+            Val
+    end.
 
--spec myself(Options :: list(option())) -> #node{}.
+-spec this_node(Options :: list(option())) -> #node{}.
 %% @pure
 %% @doc Construct "this" node from the options
-myself(Options) ->
-    #node{ip=get_option(ip, Options), port=get_option(port, Options)}.
+this_node(Options) ->
+    {IP, Port} = get_option(this, Options),
+    #node{ip=IP, port=Port}.
 
--spec filter_options(Options :: list(option())) -> list(option()).
-%% @pure
-%% @doc Filter out the options that arent needed. Like the ip/port of the node,
-%%      the initial configuration etc.
-filter_options(Options) ->
-    lists:filter(fun needed_option/1, Options).
-
--spec needed_option(Option :: option()) -> boolean().
-%% @pure
-%% @doc Predicate that specifies which options are needed
-needed_option({Opt,_Val}) ->
-    Set = [active_size, passive_size, arwl, prwl, k_active, k_passive],
-    lists:member(Opt, Set).
+-spec default_options() -> list(option()).
+%% @doc Default options for the hyparview-manager
+default_options() ->
+    [{this, {{127,0,0,1}, 6666}},
+     {active_size, 5},
+     {passive_size, 30},
+     {arwl, 6},
+     {prwl, 3},
+     {k_active, 3},
+     {k_passive, 4},
+     {shuffle_period, 30000}].
