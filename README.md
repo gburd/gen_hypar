@@ -42,8 +42,9 @@ Application parameters
 * *ip*: Which the local interface/ip address to use.
 * *port*: Which the local port to use.
 * *shuffle_period*: Defines the cyclic period of when to do a shuffle.
-* *contact_node*: Defines a contact node that the node may try an connect to right away at startup.
-* *recipient*: The registered process which should receive all messages sent to this node.
-* *notify*: The registered process which should receive neighbourup and neighbourdown events. (Used in plumtree).
+* *contact_node*: Defines a contact node that the node may try an connect to right away at startup. (o)
+* *recipient*: The registered process which should receive all messages sent to this node. (o)
+* *notify*: The registered process which should receive neighbourup and neighbourdown events. (Used in plumtree). (o)
 
+Parameters marked (o) are optional.
 
