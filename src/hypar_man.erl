@@ -8,28 +8,23 @@
 -include("hyparerl.hrl").
 
 %% API
--export([start_link/0]).
+-export([start_link/2, join_cluster/2, get_peers/0, debug_state/0]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
--define(SERVER, ?MODULE).
-
+%% The type of a priority
 -type priority() :: high | low.
-
-%% Peer entry record
--record(peer, {id   :: #node{},
-               pid  :: pid(),
-               mref :: reference()
-              }).
 
 %% State record for the manager
 -record(state, {this              :: #node{},
                 active_view  = [] :: list(#peer{}),
                 passive_view = [] :: list(#node{}),
                 last_exchange = [] :: list(#node{}),
-                options           :: list(option())
+                neighbour_reqs = [] :: list(#peer{}),
+                options           :: list(option()),
+                notify :: atom()
                }).
 
 %%%===================================================================
@@ -37,21 +32,42 @@
 %%%===================================================================
 
 %% @doc Starts the hyparview manager in a supervision tree
-start_link() ->
-    gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
+start_link(Notify, Options) ->
+    Args = [Notify, Options],
+    gen_server:start_link({local, ?MODULE}, ?MODULE, Args, []).
+
+%% @doc Join a cluster via a contact-node
+join_cluster(ContactIP, ContactPort) ->
+    ContactNode = #node{ip=ContactIP, port=ContactPort},
+    gen_server:cast(?MODULE, {join_cluster, ContactNode}).
+
+%% @doc Retrive the current connected peers
+get_peers() ->
+    gen_server:call(?MODULE, get_peers).
+
+%% @doc Debug-function, retrive the current state
+debug_state() ->
+    gen_server:call(?MODULE, debug_state).
 
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
         
-init([Options]) ->
+init([Myself, Options]) ->
+    Notify = get_option(notify, Options),
+
+    ?INFO([{?MODULE, "Initializing..."},
+           {this, Myself},
+           {notify, Notify}]),
+
     %% Seed the random number generator
     random:seed(now()),
 
     %% Check initial configuration
-    ContactNode = get_option(cluster, Options),
+    ContactNode = get_option(contact_node, Options),
     if ContactNode =/= undefined ->
-       gen_server:cast(self(), {join_cluster, ContactNode})
+            {ContactIP, ContactPort} = ContactNode,
+            join_cluster(#node{ip=ContactIP, port=ContactPort}, self())
     end,
     
     %% Start the timer to initiate the first period of the shuffling,
@@ -60,156 +76,271 @@ init([Options]) ->
     erlang:send_after(Period, self(), shuffle_time),
 
     %% Initialize the state
-    {ok, #state{this=this_node(Options), options=Options}}.
+    State = #state{this=Myself, options=Options, notify=Notify},
+    {ok, State}.
 
+%% - NEIGHBOUR -
+%% Handle a neighbour-request. If the priority is set low the request is only
+%% accepted if there is space in the active view. Otherwise it's rejected.
+%% If the priority is high then the request is always accepted, even if one
+%% active connection has to be dropped.
+handle_cast({{neighbour, Node, low}, SenderPid},
+            State=#state{active_view=Active,
+                         options=Options}) ->
+    ActiveSize = get_option(active_size, Options),
+    NewPeer = connect_sup:new_peer(Node, SenderPid),
+    case length(Active) < ActiveSize of
+        true ->
+            neighbour_accept(NewPeer),
+            ?INFO([{?MODULE, "Received low priority neighbour-request, accepting it..."},
+                   {peer, NewPeer}]),
+            {noreply, add_node_active(NewPeer, State)};
+        false ->            
+            neighbour_decline(NewPeer),
+            ?INFO([{?MODULE, "Received low priority neighbour-request, rejecting it..."},
+                   {peer, NewPeer}]),
+            {noreply, State}
+    end;
+
+%% Handle a high priority neighbour request
+handle_cast({{neighbour, Node, high}, SenderPid},
+            State) ->
+    NewPeer = connect_sup:new_peer(Node, SenderPid),
+    neighbour_accept(NewPeer),
+    ?INFO([{?MODULE, "Received high priority neighbour-request, must accept..."},
+           {peer, NewPeer}]),
+    {noreply, add_node_active(NewPeer, State)};
+
+%% Handle a neighbour_accept message sent as an answer to a neighbour_request
+handle_cast({neighbour_accept, Pid},
+            State0=#state{active_view=Active,
+                          neighbour_reqs=NReqs0}) ->
+    Peer = lists:keyfind(Pid, #peer.pid, NReqs0),
+    NReqs = lists:keydelete(Pid, #peer.pid, NReqs0),
+    State = State0#state{active_view=[Peer|Active], neighbour_reqs=NReqs},
+
+    ?INFO([{?MODULE, "Neighbour accepted, adding to active view..."},
+           {peer, Peer}]),
+    {noreply, State};
+
+handle_cast({neighbour_decline, Pid},
+            State=#state{neighbour_reqs=NReqs0}) ->
+    Peer = lists:keyfind(Pid, #peer.pid, NReqs0),
+    NReqs = lists:keydelete(Pid, #peer.pid, NReqs0),
+    ?INFO([{?MODULE, "Neighbour decline, trying a new one..."},
+           {peer, Peer}]),
+    {noreply, find_new_active(State#state{neighbour_reqs=NReqs})};
+
+%% - JOIN -
 %% Handle an incoming join-message, first time we see NewPid.
 %% Monitor and add to active view.
-handle_cast({{join, NewNode}, NewPid}, State0) ->
-    %% Construct new active entry
-    MRef = monitor(process, NewPid),
-    NewPeer = new_peer(NewNode, NewPid, MRef),
+handle_cast({{join, NewNode}, SenderPid},
+            State0) ->
+    %% Construct new active peer
+    NewPeer = connect_sup:new_peer(NewNode, SenderPid),
     State = add_node_active(NewPeer, State0),
+
+    ?INFO([{?MODULE, "Received a join message adding to active view..."},
+           {peer, NewPeer}]),
 
     %% Forward the join to everyone in the active view
     ARWL = get_option(arwl, State#state.options),
-    ForwardFun = fun(Peer) when Peer#peer.id =/= NewNode ->
-                         forward_join(Peer, NewNode, ARWL);
-                    (_) -> ok
-                 end,
-    lists:foreach(ForwardFun, State#state.active_view),
+    ForwardJoinFun =
+        fun(Peer) when Peer#peer.id =/= NewNode ->
+                forward_join(Peer, NewNode, ARWL);
+           (_) -> ok
+        end,
+    
+    %% NOTE: Seems stupid to call a function named remove_active here,
+    %%       should rename or change it to be more clear. 
+    ForwardPeers = remove_active(NewPeer, State#state.active_view),
+    ?INFO([{?MODULE, "Sending forward-join message to active peers..."},
+           {peers, ForwardPeers}]),
+    lists:foreach(ForwardJoinFun, ForwardPeers),
     {noreply, State};
 
+%% - FORWARD JOIN -
 %% Handle an incoming forward-join, first case where either TTL is zero or
 %% the active view only has one member
-handle_cast({{forward_join, NewNode, TTL}, _Pid},
-            State0=#state{this=Myself, active_view=Active})
+handle_cast({{forward_join, NewNode, TTL}, _SenderPid},
+            State0=#state{this=Myself,
+                          active_view=Active})
   when TTL =:= 0 orelse length(Active) =:= 1 ->
-    State = case add_me(NewNode, Myself) of
-                #peer{}=Peer ->
-                    add_node_active(Peer, State0);
-                Err ->
-                    ?DEBUG(Err),
-                    State0
-            end,
-    {noreply, State};
+    ?INFO([{?MODULE, "Received forward_join, trying to add to active view..."},
+           {node, NewNode},
+           {ttl, TTL},
+           {active_length, length(Active)}]),
+    case forward_join_reply(NewNode, Myself) of
+        Peer=#peer{} ->
+            ?INFO([{?MODULE, "Forward join successful, adding to active view..."},
+                   {peer, Peer}]),
+            {noreply, add_node_active(Peer, State0)};
+        Err ->
+            ?ERROR([{?MODULE, "Error when trying to establish contact for forward-join reply..."},
+                    Err]),
+            {noreply, State0}
+    end;
 
 %% Catch the rest of the forward joins, maybe adds to passive view and
 %% forwards the message to a random neighbour
-handle_cast({{forward_join, NewNode, TTL}, Pid},
-            State0=#state{active_view=Active, options=Options}) ->
+handle_cast({{forward_join, NewNode, TTL}, SenderPid},
+            State0=#state{active_view=Active,
+                          options=Options}) ->
+    ?INFO([{?MODULE, "Received forward-join..."},
+           {node, NewNode}]),
     PRWL = get_option(prwl, Options),
     State =
         if TTL =:= PRWL ->
+                ?INFO([{?MODULE, "Forward-join resulted in node added to passive view..."},
+                       {ttl, TTL}]),
                 add_node_passive(NewNode, State0);
            true ->
                 State0
         end,
 
     %% Remove the sender as a possible recipient
-    Peers = lists:keydelete(Pid, #peer.pid, Active),
+    Peers = lists:keydelete(SenderPid, #peer.pid, Active),
     Peer = misc:random_elem(Peers),
     forward_join(Peer, NewNode, TTL-1),
+    ?INFO([{?MODULE, "Sending forward-join to random neighbour..."},
+           {neighbour, Peer}]),
     {noreply, State};
 
+%% Handle an forward_join_reply message. This is in response to a propageted
+%% join/forward-join. When a forward-join reaches a node that goes into the
+%% active view of the joining node they open up an active connection. The
+%% source node receives messages on this form from the forward-join-nodes.
+%% (Not in protocol but needed for the logic to work.
+handle_cast({{forward_join_reply, Node}, SenderPid},
+            State) ->
+    NewPeer = connect_sup:new_peer(Node, SenderPid),
+    ?INFO([{?MODULE, "Receieved a forward_join-reply, adding node to active view..."},
+           {peer, NewPeer}]),
+    {noreply, add_node_active(NewPeer, State)};
+
+%% - SHUFFLE -
 %% Respond to a shuffle message, either accept the shuffle and reply to it
 %% or propagate the message using a random walk.
-handle_cast({{shuffle, Node, TTL, ExchangeList}, Pid},
+handle_cast({{shuffle, Node, TTL, ExchangeList}, SenderPid},
             State=#state{active_view=Active})
   when TTL-1 > 0 andalso length(Active) > 1 ->
     %% Random walk, propagate the message to someone except for the sender
-    Peers = lists:keydelete(Pid, #peer.pid, Active),
+    Peers = lists:keydelete(SenderPid, #peer.pid, Active),
     RandomPeer = misc:random_elem(Peers),
     shuffle(RandomPeer, Node, TTL-1, ExchangeList),
     {noreply, State};
-handle_cast({{shuffle, Node, _TTL, ExchangeList}, _Pid},
+
+handle_cast({{shuffle, Node, _TTL, ExchangeList}, _SenderPid},
             State=#state{this=Myself,
-                         active_view=Active,
                          passive_view=Passive}) ->
     ReplyList = misc:take_n_random(length(ExchangeList), Passive),
-    case lists:keyfind(Node, #peer.id, Active) of
+    case connect_sup:new_temp_peer(Node, Myself#node.ip) of
         Peer=#peer{} ->
-            shuffle_reply(Peer, ReplyList);
-        false ->
-            case connect_sup:start_connection(Node, Myself) of
-                {ok, Pid, MRef} ->
-                    Peer = new_peer(Node, Pid, MRef),
-                    shuffle_reply(Peer, ReplyList),
-                    kill(Peer);
-                {error, _Reason} ->
-                    io:format("Error connect, skipping shufflereply")
-            end
-    end,
-    {noreply, integrate_exchange_list(State, ExchangeList, ReplyList)};
-%% Take care of a shuffle reply message
-handle_cast({{shuffle_reply, ReplyList}, _Pid},
-            State0=#state{last_exchange=ExchangeList}) ->
-    State = State0#state{last_exchange=[]},
-    {noreply, integrate_exchange_list(State, ExchangeList, ReplyList)};
+            shuffle_reply(Peer, ReplyList),
+            kill(Peer),
+            {noreply, integrate_exchange_list(State, ExchangeList, ReplyList)};
+        Err ->
+            ?ERROR([{?MODULE, "Error when trying to establish temporary connection for shuffle-reply..."},
+                    Err]),
+            {noreply, State}
+    end;
+
+%% Take care of a shuffle reply message, integrate the reply into our view
+handle_cast({{shuffle_reply, ReplyList}, _SenderPid},
+            State0) ->
+    State = integrate_exchange_list(State0, State0#state.last_exchange, ReplyList),
+    {noreply, State};
 
 %% Initate a shuffle procedure
-handle_cast(shuffle, State=#state{this=Myself, active_view=Active,
-                                  options=Options}) ->
+handle_cast(shuffle_time,
+            State=#state{this=Myself,
+                         active_view=Active,
+                         options=Options}) ->
     ExchangeList = create_exchange(State),
     RandomPeer = misc:random_elem(Active),
     ARWL = get_option(arwl, Options),
     shuffle(RandomPeer, Myself, ARWL, ExchangeList),
+
+    %% Restart the timer
+    Period = get_option(shuffle_period, Options),
+    erlang:send_after(Period, self(), shuffle_time),
     {noreply, State#state{last_exchange=ExchangeList}};
+
+%% - DISCONNECT -
 %% Handle a disconnect-message. Close the connection and move the node
 %% to the passive view
-handle_cast({disconnect, Pid}, State0=#state{active_view=Active,
-                                             passive_view=Passive}) ->
-    State = case lists:keyfind(Pid, #peer.pid, Active) of
-                false -> State0;
-                #peer{}=Peer ->
-                    kill(Peer),
-                    State0#state{active_view=remove_active(Peer, Active),
-                                 passive_view=[Peer#peer.id|Passive]}
-            end,
-    {noreply, State};
-
-%% Handle an add_me message. This is in response to a propageted join/forward-join.
-%% When a forward-join reaches a node that goes into the active view of the joining node
-%% they open up an active connection. The source node receives messages on this form from
-%% the forward-join-nodes. (Not in protocol but needed for the logic to work.
-handle_cast({{add_me, Node}, Pid}, State) ->
-    MRef = monitor(process, Pid),
-    NewPeer = new_peer(Node, Pid, MRef),
-    {noreply, add_node_active(NewPeer, State)};
-handle_cast({init, ContactNode}, State=#state{this=Myself}) ->
-    Peer = join(ContactNode, Myself),
-    {noreply, State#state{active_view=[Peer]}}.
-
-%% Handle a neighbour-request. If the priority is set low the request is only
-%% accepted if there is space in the active view. Otherwise it's rejected.
-%% If the priority is high then the request is always accepted, even if one
-%% active connection has to be dropped.
-handle_call({neighbour, Node, low}, {Pid,_Ref},
-            State=#state{active_view=Active, options=Options}) ->
-    ActiveSize = get_option(active_size, Options),
-    case length(Active) < ActiveSize of
-        true ->
-            MRef = monitor(process, Pid),
-            NewPeer = new_peer(Node, Pid, MRef),
-            {reply, ok, add_node_active(NewPeer, State)};
-        false ->
-            {reply, full, State}
+handle_cast({disconnect, Pid},
+            State0=#state{active_view=Active,
+                          passive_view=Passive}) ->
+    case lists:keyfind(Pid, #peer.pid, Active) of
+        false -> 
+            ?INFO([{?MODULE, "Received a disconnect message from process not in active..."}]),
+            {noreply, State0};
+        #peer{}=Peer ->
+            ?INFO([{?MODULE, "Received a disconnect message, will move peer from active to passive..."},
+                   {peer, Peer}]),
+            kill(Peer),
+            State = State0#state{active_view=remove_active(Peer, Active),
+                                 passive_view=[Peer#peer.id|Passive]},
+            {noreply, find_new_active(State)}
     end;
-handle_call({neighbour, Node, high}, {Pid, _Ref}, State) ->
-    MRef = monitor(process, Pid),
-    NewPeer = new_peer(Node, Pid, MRef),
-    {reply, ok, add_node_active(NewPeer, State)}.
 
+%% - JOIN CLUSTER -
+%% Handle an initial join_cluster message. Initiates a connection to a cluster via
+%% the contact-node. 
+handle_cast({join_cluster, ContactNode},
+            State=#state{this=Myself}) ->
+    ?INFO([{?MODULE, "Trying to join cluster via given contact-node..."},
+           {contactnode, ContactNode}]),
+    case join(ContactNode, Myself) of
+        Peer=#peer{} ->
+            ?INFO([{?MODULE, "Cluster join successful, adding contact-node to active view..."},
+                   {peer, Peer}]),
+            {noreply, State#state{active_view=[Peer]}};
+        Err ->
+            ?ERROR([{?MODULE, "Cluster join unsuccessful, error during join procedure..."},
+                   Err]),
+            {noreply, State}
+    end.
+
+%% - MONITOR/CONNECTION DOWN -
 %% A monitor has gone down. This is equal to the connection has gone down.
-%% Thus we remove the process/node from the active view and try to find a new.
+%% This may be either an active connection or potential neighbour, in that
+%% case we try to find a new active. The connection might be unimportant,
+%% like a shuffle gone bad by which we just ignore it and continue.
+%% NOTE: Unsure if I need to keep track of the Nodes that has been tried from
+%%       the passive view before hand. Since they might be tried again here.
+%%       if we are unlucky. I think this isn't nessecary, might be an optimization
+%%       though.
 handle_info({'DOWN', MRef, process, _Pid, _Reason},
-            State=#state{active_view=Active0}) ->
-    case lists:keymember(MRef, #peer.mref, Active0) of
-        true ->
+            State=#state{active_view=Active0,
+                         neighbour_reqs=NReqs0}) ->
+    case lists:keyfind(MRef, #peer.mref, Active0) of
+        Peer=#peer{} ->
+            ?INFO([{?MODULE, "An active neighbour has become unreachable, find a new one..."},
+                   {peer, Peer}]),
             Active = remove_active(MRef, Active0),
             {noreply, find_new_active(State#state{active_view=Active})};
         false ->
-            {noreply, State}
+            case lists:keyfind(MRef, #peer.mref, NReqs0) of
+                Peer=#peer{} ->
+                    ?INFO([{?MODULE, "Peer that is currently being queried to become a neighbour went down, trying a new one..."},
+                           {peer, Peer}]),
+                    NReqs = lists:keydelete(MRef, #peer.mref, NReqs0),
+                    {noreply, find_new_active(State#state{neighbour_reqs=NReqs})};
+                false ->
+                    ?INFO([{?MODULE, "An unimportant peer has died (not in active nor potential neighbour)..."}]),
+                    {noreply, State}
+            end
     end.
+
+%% Get the current active peers from the node
+handle_call(get_peers, _From, State) ->
+    {reply, State#state.active_view, State};
+
+%% Debug call
+handle_call(debug_state, _From, State) ->
+    {reply, State, State}.
 
 terminate(_Reason, _State) ->
     ok.
@@ -250,7 +381,7 @@ integrate_exchange_list(State=#state{this=Myself, active_view=Active,
     PassiveSize = get_option(passive_size, Options),
     SlotsNeeded = length(ExchangeList) - PassiveSize + length(Passive),
     NewPassive = free_slots(SlotsNeeded, Passive, ReplyList),
-    State#state{passive_view=ExchangeList ++ NewPassive}.
+    State#state{passive_view=ExchangeList ++ NewPassive, last_exchange=[]}.
             
 -spec free_slots(SlotsNeeded :: integer(), Passive :: list(#node{}),
                  ReplyList :: list(#node{})) -> list(#node{}).
@@ -265,13 +396,6 @@ free_slots(I, Passive, [H|T]) ->
         true  -> free_slots(I-1, lists:delete(H, Passive), T);
         false -> free_slots(I, Passive, T)
     end.
-
--spec new_peer(Node :: #node{}, Pid :: pid(), MRef :: reference()) ->
-                      #peer{}.
-%% @pure
-%% @doc Create a new peer entry for given Node, Pid and MRef
-new_peer(Node, Pid, MRef) ->
-    #peer{id=Node, pid=Pid, mref=MRef}.
 
 -spec remove_active(Entry :: #peer{}, Active :: list(#peer{})) ->
                            list(#peer{});
@@ -290,7 +414,7 @@ remove_active(Node=#node{}, Active) ->
 remove_active(Pid, Active) when is_pid(Pid) ->
     lists:keydelete(Pid, #peer.pid, Active);
 remove_active(MRef, Active) when is_reference(MRef) ->
-    lists:key_dete(MRef, #peer.mref, Active).
+    lists:keydelete(MRef, #peer.mref, Active).
 
 -spec add_node_active(Entry :: #peer{}, State :: #state{}) -> #state{}.
 %% @doc Add a node to an active view, removing a node if necessary.
@@ -337,47 +461,33 @@ add_node_passive(Node, State=#state{this=Myself, options=Options,
 -spec find_new_active(State :: #state{}) -> #state{}.
 %% @doc When a node is thought to have died this function is called.
 %%      It will recursively try to find a new neighbour from the passive
-%%      view until it finds a good one.
+%%      view until it finds a good one, send that node an asynchronous
+%%      neighbour request.
 find_new_active(State=#state{this=Myself,
-                             active_view=Active, passive_view=Passive}) ->
+                             active_view=Active,
+                             passive_view=Passive,
+                             neighbour_reqs=NReqs}) ->
     Priority = get_priority(Active),
     {NewPeer, NewPassive} = find_neighbour(Priority, Passive, Myself),
-    State#state{active_view=[NewPeer|Active], passive_view=NewPassive}.
+    State#state{passive_view=NewPassive, neighbour_reqs=[NewPeer|NReqs]}.
 
 find_neighbour(Priority, Passive, Myself) ->
     find_neighbour(Priority, Passive, Myself, []).
 
 find_neighbour(Priority, Passive, Myself, Tried) ->
     {Node, PassiveRest} = misc:drop_random(Passive),
-    case connect_sup:start_connection(Node, Myself) of
+    case connect_sup:new_peer(Node, Myself) of
         #peer{}=Peer ->
-            case neighbour(Peer, Myself, Priority) of
-                ok -> 
-                    {Peer, PassiveRest ++ Tried};
-                failed ->
-                    kill(Peer),
-                    find_neighbour(Priority, PassiveRest, Myself, [Node|Tried])
-            end;
+            ?INFO([{?MODULE, "Found a potential neighbour, querying it..."},
+                   {peer, Peer}]),
+            neighbour(Peer, Myself, Priority),
+            {Peer, PassiveRest ++ Tried};
         Err ->
-            ?DEBUG(Err),
+            ?ERROR([{?MODULE, "Error when trying to establish connection to potential neighbour, trying a new one..."},
+                    {node, Node},
+                    Err]),
             find_neighbour(Priority, PassiveRest, Myself, Tried)
     end.
-
--spec shuffle(Peer :: #peer{}, Myself :: #node{}, TTL :: non_neg_integer(), ExchangeList :: list(#node{})) -> ok.
-%% @doc Send a shuffle message to a peer
-shuffle(Peer, Myself, TTL, ExchangeList) ->
-    connect:send_message(Peer#peer.pid, {shuffle, Myself, TTL, ExchangeList}).
-
--spec shuffle_reply(Peer :: #peer{}, ReplyList :: list(#node{})) -> ok.
-%% @doc Send a shuffle-reply message to a peer
-shuffle_reply(Peer, ReplyList) ->
-    connect:send_message(Peer#peer.pid, {shuffle_reply, ReplyList}).
-
--spec neighbour(Peer :: #peer{}, Myself :: #node{}, Priority :: priority()) ->
-                       ok | failed.
-%% @doc Send a neighbour-request to a node, with a given priority.
-neighbour(#peer{pid=Pid}, Myself, Priority) ->
-    connect:send_sync_message(Pid, {neighbour, Myself, Priority}).
 
 -spec get_priority(list(#peer{})) -> priority().
 %% @pure
@@ -386,54 +496,94 @@ neighbour(#peer{pid=Pid}, Myself, Priority) ->
 get_priority([]) -> high;
 get_priority(_)  -> low.
 
--spec join(ContactNode :: #node{}, Myself :: #node{}) -> #peer{}.
-%% @doc Send a join message to a connection-handler, returning the new
-%%      corresponding active entry. Should maybe add some wierd error-handling here.
-%%      It isn't specified what is suppose to happen if the join fails. Retry maybe?
-%%      Maybe an option to specify multiple contactnode and try them in order?
-join(ContactNode, Myself) ->
-    {ok, Pid, MRef} = connect_sup:start_connection(ContactNode, Myself),
-    connect:send_message(Pid, {join, Myself}),
-    new_peer(ContactNode, Pid, MRef).
-
--spec kill(Entry :: #peer{}) -> ok.
-%% @doc Send a kill message to a connection-handler
-kill(#peer{pid=Pid, mref=MRef}) ->
-    demonitor(MRef, [flush]),
-    connect:kill(Pid).
-
--spec forward_join(Entry :: #peer{}, NewNode :: #node{},
-                   TTL :: non_neg_integer()) -> ok.                           
-%% @doc Send a forward-join message to a connection-handler
-forward_join(#peer{pid=Pid}, NewNode, TTL) ->
-    connect:send_message(Pid, {forward_join, NewNode, TTL}).
-
--spec disconnect(Peer :: #peer{}) -> true.
-%% @doc Send a disconnect message to a connection-handler
-disconnect(#peer{pid=Pid, mref=MRef}) ->
-    connect:send_message(Pid, disconnect),
-    demonitor(MRef, [flush]).
-
--spec add_me(Node :: #node{}, Myself :: #node{}) -> #peer{} | {error, term()}.
-%% @doc Response to a forward_join propagation. Tells the node who
-%%      initiated the join to setup a connection
-add_me(Node, Myself) ->
-    case connect_sup:start_connection(Node, Myself) of
-        {ok, Pid, MRef} ->
-            connect:send_message(Pid, {add_me, Myself}),
-            #peer{id=Node, pid=Pid, mref=MRef};
-        Err ->
-            Err
-    end.
-
 -spec drop_random_active(#state{}) -> #state{}.
 %% @doc Drop a random node from the active view down to the passive view.
 %%      Send a DISCONNECT message to the dropped node.
 drop_random_active(State=#state{active_view=Active0, passive_view=Passive}) ->
-    {Active, Dropped} = misc:drop_random(Active0),
+    {Dropped, Active} = misc:drop_random(Active0),
     disconnect(Dropped),
+    ?INFO([{?MODULE, "Dropping a random peer from the active view to make room..."},
+           {peer, Dropped}]),
     State#state{active_view=Active,
                 passive_view=[Dropped#peer.id|Passive]}.
+
+%% -------------------------------
+%% Message/Event related functions
+%% -------------------------------
+
+-spec join(ContactNode :: #node{}, Myself :: #node{}) ->
+                  #peer{} | {error, any()}.
+%% @doc Send a join message to a connection-handler, returning the new
+%%      corresponding active entry. Should maybe add some wierd error-handling here.
+%%      It isn't specified what is suppose to happen if the join fails. Retry maybe?
+%%      Maybe an option to specify multiple contactnode and try them in order?
+%%      Or maybe just ignore it, move on and let the user of the service just retry
+%%      it with join_cluster.
+join(ContactNode, Myself) ->
+    case connect_sup:new_peer(ContactNode, Myself) of
+        NewPeer=#peer{} ->
+            connect:send_control(NewPeer, {join, Myself}),
+            NewPeer;
+        Err ->
+            Err
+    end.
+
+-spec forward_join(Peer :: #peer{}, NewNode :: #node{},
+                   TTL :: non_neg_integer()) -> ok.                           
+%% @doc Send a forward-join message to a connection-handler
+forward_join(Peer, NewNode, TTL) ->
+    connect:send_control(Peer, {forward_join, NewNode, TTL}).
+
+-spec forward_join_reply(Node :: #node{}, Myself :: #node{}) ->
+                                #peer{} | {error, term()}.
+%% @doc Response to a forward_join propagation. Tells the node who
+%%      initiated the join to setup a connection
+forward_join_reply(Node, Myself) ->
+    case connect_sup:new_peer(Node, Myself) of
+        Peer=#peer{} ->
+            connect:send_control(Peer, {forward_join_reply, Myself}),
+            Peer;
+        Err ->
+            Err      
+    end.
+
+-spec shuffle(Peer :: #peer{}, Myself :: #node{}, TTL :: non_neg_integer(),
+              ExchangeList :: list(#node{})) -> ok.
+%% @doc Send a shuffle message to a peer
+shuffle(Peer, Myself, TTL, ExchangeList) ->
+    connect:send_control(Peer, {shuffle, Myself, TTL, ExchangeList}).
+
+-spec shuffle_reply(Peer :: #peer{}, ReplyList :: list(#node{})) -> ok.
+%% @doc Send a shuffle-reply message to a peer
+shuffle_reply(Peer, ReplyList) ->
+    connect:send_control(Peer#peer.pid, {shuffle_reply, ReplyList}).
+
+-spec neighbour(Peer :: #peer{}, Myself :: #node{}, Priority :: priority()) ->
+                       ok | failed.
+%% @doc Send a neighbour-request to a node, with a given priority.
+neighbour(Peer, Myself, Priority) ->
+    connect:send_control(Peer, {neighbour, Myself, Priority}).
+
+%% @doc Accept a peer as a neighbour
+neighbour_accept(Peer) ->
+    connect:send_control(Peer, neighbour_accept).
+
+%% @doc Decline a peer as a neighbour, demonitor the controling process
+neighbour_decline(Peer) ->
+    connect:send_control(Peer, neighbour_decline),
+    demonitor(Peer#peer.mref).
+
+-spec kill(Peer :: #peer{}) -> ok.
+%% @doc Send a kill message to a connection-handler
+kill(Peer) ->
+    demonitor(Peer#peer.mref, [flush]),
+    connect:kill(Peer).
+
+-spec disconnect(Peer :: #peer{}) -> true.
+%% @doc Send a disconnect message to a connection-handler
+disconnect(Peer) ->
+    demonitor(Peer#peer.mref, [flush]),
+    connect:send_control(Peer, disconnect).
 
 %% -------------------------
 %% Options related functions
@@ -445,22 +595,16 @@ drop_random_active(State=#state{active_view=Active0, passive_view=Passive}) ->
 get_option(Option, Options) ->
     case proplists:get_value(Option, Options) of
         undefined ->
-            proplists:get_value(Option, default_options);
+            proplists:get_value(Option, default_options());
         Val ->
             Val
     end.
 
--spec this_node(Options :: list(option())) -> #node{}.
-%% @pure
-%% @doc Construct "this" node from the options
-this_node(Options) ->
-    {IP, Port} = get_option(this, Options),
-    #node{ip=IP, port=Port}.
-
 -spec default_options() -> list(option()).
 %% @doc Default options for the hyparview-manager
 default_options() ->
-    [{this, {{127,0,0,1}, 6666}},
+    [{ip, {127,0,0,1}},
+     {port, 6000},
      {active_size, 5},
      {passive_size, 30},
      {arwl, 6},

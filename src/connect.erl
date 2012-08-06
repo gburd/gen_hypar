@@ -7,8 +7,7 @@
 -behaviour(gen_server).
 
 %% API
--export([start_link/1, start_link/2, send_message/2,
-         send_sync_message/2, reply/2, kill/1]).
+-export([start_link/2, start_link/3, send_control/2, send_message/2, kill/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -18,110 +17,136 @@
 
 -include("hyparerl.hrl").
 
--record(conn, {socket :: inet:socket(),
-               ref :: {pid(), reference()} | none}).
+%% Local state
+-record(conn_st, {socket     :: inet:socket(),
+                  recipient  :: atom()}).
 
 %%%===================================================================
 %%% API
 %%%===================================================================
 
 %% @doc Start a tcp-handler that accepts connections from a listen-socket
-start_link(ListenSocket) ->
-    gen_server:start_link(?MODULE, [listen, ListenSocket], []).
+start_link(ListenSocket, Recipient) ->
+    Args = [listen, ListenSocket, Recipient],
+    gen_server:start_link(?MODULE, Args, []).
 
 %% @doc Start a tcp-handler with a started tcp-connection
-start_link(_ListenSocket, Socket) ->
-    gen_server:start_link(?MODULE, [connect, Socket], []).
+start_link(_ListenSocket, Recipient, Socket) ->
+    Args = [connect, Socket, Recipient],
+    gen_server:start_link(?MODULE, Args, []).
 
--spec send_message(Pid :: pid(), Msg :: any()) -> ok.
-%% @doc Wrapper function over gen_server:cast
-send_message(Pid, Msg) ->
-    gen_server:cast(Pid, {async, Msg}).
+-spec send_control(Peer :: #peer{}, Msg :: any()) -> ok.
+%% @doc Send a control message (i.e node -> node)
+send_control(Peer, Msg) ->
+    gen_server:cast(Peer#peer.pid, {control, Msg}).
 
--spec send_sync_message(Pid :: pid(), Msg :: any()) -> any().
-%% @doc Send a synchrounous message
-send_sync_message(Pid, Msg) ->
-    gen_server:call(Pid, {sync, Msg}, ?TIMEOUT).
+-spec send_message(Peer :: #peer{}, Msg :: any()) -> ok.
+%% @doc Send a message to a peer, this will be routed to the configured
+%%      recipient process. (For example the plumtree service)
+send_message(Peer, Msg) ->
+    gen_server:cast(Peer#peer.pid, {message, Msg}).
 
--spec reply(Pid :: pid(), Reply :: any()) -> ok.
-%% @doc Reply to a sync-message
-reply(Pid, Reply) ->
-    gen_server:cast(Pid, {reply, Reply}).
-
--spec kill(Pid :: pid()) -> ok.
+-spec kill(Peer :: #peer{}) -> ok.
 %% @doc Kill a tcp-handler
-kill(Pid) ->
-    gen_server:cast(Pid, kill).
+kill(Peer) ->
+    gen_server:cast(Peer#peer.pid, kill).
 
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
 
 %% Either initiate a connection via a listen socket or existing socket
-init([listen, ListenSocket]) ->
-    gen_server:cast(self(), accept),
-    {ok, #conn{socket=ListenSocket}};
-init([connect, Socket]) ->
-    inet:setopts(Socket, [{active, once}]),
-    {ok, #conn{socket=Socket}}.
+init([listen, ListenSocket, Recipient]) ->
+    ?INFO([{?MODULE, "Starting a listening connection-handler..."},
+           {pid, self()}]),
 
-%% Handle sync-messages
-%% A bit concered of deadlock. Feels like this might be suceptible to that.
-%% As far as I can see now that won't happen since I only will use
-%% sync-messages for the party who initated the connection.
-handle_call({sync, Msg}, From, Conn=#conn{socket=Socket,
-                                          ref=none}) ->
-    io:format("Sending sync-message: ~p~n", [Msg]),
-    send(Socket, {sync, Msg}),
-    {noreply, Conn#conn{ref=From}}.
+    gen_server:cast(self(), accept),
+    ConnSt = #conn_st{socket=ListenSocket,
+                      recipient=Recipient},
+    {ok, ConnSt};
+init([connect, Socket, Recipient]) ->
+    ?INFO([{?MODULE, "Starting a connection-handler on existing socket..."},
+           {pid, self()}]),
+    
+    inet:setopts(Socket, [{active, once}]),
+    ConnSt = #conn_st{socket=Socket,
+                      recipient=Recipient},
+    {ok, ConnSt}.
+
+%% Handle the sending of messages
+handle_cast(Msg={message, _Payload}, ConnSt=#conn_st{socket=Socket}) ->
+    ?INFO([{?MODULE, "Sending message..."},
+           {pid, self()}]),
+
+    send(Socket, Msg),
+    {noreply, ConnSt};
+
+%% Handle the sending of control-messages
+handle_cast(Msg={control, Payload}, ConnSt=#conn_st{socket=Socket}) ->
+    ?INFO([{?MODULE, "Sending control-message..."},
+           {pid, self()},
+           {msg, Payload}]),
+
+    send(Socket, Msg),
+    {noreply, ConnSt};
 
 %% Accept an incoming connection
-handle_cast(accept, Conn=#conn{socket=ListenSocket}) ->
+handle_cast(accept, ConnSt=#conn_st{socket=ListenSocket}) ->
     {ok, Socket} = gen_tcp:accept(ListenSocket),
+    ?INFO([{?MODULE, "Accepting an incoming connection..."},
+           {pid, self()}]),
+
     connect_sup:start_listener(),
-    {noreply, Conn#conn{socket=Socket}};
+    {noreply, ConnSt#conn_st{socket=Socket}};
+
 %% Kill the connection
-handle_cast(kill, Conn=#conn{socket=Socket}) ->
-    io:format("Killing connection, pid: ~p~n", [self()]),
+handle_cast(kill, ConnSt=#conn_st{socket=Socket}) ->
+    ?INFO([{?MODULE, "Killing connection..."},
+           {pid, self()}]),
+
     gen_tcp:close(Socket),
-    {stop, normal, Conn};
-%% Handle a message
-handle_cast(Msg, Conn=#conn{socket=Socket}) ->
-    io:format("Sending message: ~p~n", [Msg]),
-    send(Socket, Msg),
-    {noreply, Conn}.
+    {stop, normal, ConnSt}.
 
 %% Take care of incoming tcp-data
-handle_info({tcp, Socket, Data}, Conn) ->
-    io:format("Recieved data over connection~n"),  
-    Return = case binary_to_term(Data) of
-                 {async, Msg} -> 
-                     gen_server:cast(hypar_man, {Msg, self()}),
-                     {noreply, Conn};
-                 {reply, Reply} ->
-                     gen_server:reply(Conn#conn.ref, Reply),
-                     {noreply, Conn#conn{ref=none}};
-                 {sync, Msg} ->
-                     Reply = gen_server:call(hypar_man, Msg, ?TIMEOUT),
-                     send(Socket, {reply, Reply}),
-                     {noreply, Conn}
-             end,
+handle_info({tcp, Socket, Data}, ConnSt=#conn_st{recipient=Recipient}) ->
+    case binary_to_term(Data) of
+        {message, Msg} -> 
+            ?INFO([{?MODULE, "Received a message, sending it to recipient..."},
+                   {pid, self()},
+                   {recipient, Recipient}]),
+            gen_server:cast(Recipient, {Msg, self()});
+        {control, Msg} ->
+            ?INFO([{?MODULE, "Received a control-message, sending it to manager..."},
+                   {pid, self()}]),
+            gen_server:cast(hypar_man, {Msg, self()})
+    end,
     inet:setopts(Socket, [{active, once}]),
-    Return;
-%% If the connection is closed, stop the handler
-handle_info({tcp_closed, _Socket}, Conn) ->
-    io:format("TCP-connection closed, pid: ~p~n", [self()]),
-    {stop, normal, Conn};
-%% If the connection experience an error, stop the handler
-handle_info({tcp_error, _Socket, _Reason}, Conn) ->
-    io:format("TCP-connection error, pid: ~p~n", [self()]),
-    {stop, normal, Conn}.
+    {noreply, ConnSt};
 
-terminate(_Reason, _Conn) ->
+%% If the connection is closed, stop the handler
+handle_info({tcp_closed, _Socket}, ConnSt) ->
+    ?INFO([{?MODULE, "TCP-connection closed..."},
+           {pid, self()}]),
+    
+    {stop, normal, ConnSt};
+
+%% If the connection experience an error, stop the handler
+handle_info({tcp_error, _Socket, Reason}, ConnSt) ->
+    ?ERROR([{?MODULE, "TCP-connection experienced an error, closing it..."},
+            {error, Reason},
+            {pid, self()}]),
+    
+    {stop, normal, ConnSt}.
+
+%% No handle_call used
+handle_call(_Msg, _From, ConnSt) ->
+    {stop, not_used, ConnSt}.
+
+terminate(_Reason, _Conn_St) ->
     ok.
 
-code_change(_OldVsn, Conn, _Extra) ->
-    {ok, Conn}.
+code_change(_OldVsn, Conn_St, _Extra) ->
+    {ok, Conn_St}.
 
 %%%===================================================================
 %%% Internal functions

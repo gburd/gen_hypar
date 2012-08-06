@@ -5,41 +5,92 @@
 -behaviour(supervisor).
 
 %% API
--export([start_link/1, start_listener/0, start_connection/2, test/1, test_nodes/0]).
+-export([start_link/2, new_peer/2, new_temp_peer/2, start_listener/0]).
 
 %% Supervisor callbacks
 -export([init/1]).
 
 -include("hyparerl.hrl").
--define(SERVER, ?MODULE).
+
+-define(TIMEOUT, 10000).
 
 %%%===================================================================
 %%% API functions
 %%%===================================================================
 
-start_link(Myself) ->
-    supervisor:start_link({local, ?SERVER}, ?MODULE, Myself).
+start_link(Recipient, Myself) ->
+    supervisor:start_link({local, ?MODULE}, ?MODULE, [Recipient, Myself]).
 
-start_listener() ->
-    supervisor:start_child(?MODULE, []).
-
--spec start_connection(OutNode :: node(), Myself :: node()) ->
-                              {ok, pid(), reference()} | {error, any()}.
-start_connection(#node{ip=IPAddr, port=Port}, #node{ip=MyIPAddr}) ->
-    %% Maybe add a timeout here? The connect might block I think.
-    Status = gen_tcp:connect(IPAddr, Port, [{ip, MyIPAddr},
-                                            {reuseaddr, true},
-                                            binary,
-                                            {active, false},
-                                            {packet, 2},
-                                            {keepalive, true}]),
+-spec new_peer(Node :: node(), Myself :: node()) ->
+                      #peer{} | {error, any()};
+              (Node :: #node{}, Pid :: pid()) ->
+                      #peer{}.
+%% @doc Start a new peer, returning it if successful otherwise
+%%      it returns an error.
+new_peer(Node=#node{ip=RemoteIP, port=RemotePort},
+         #node{ip=LocalIP, port=LocalPort}) ->
+    ?INFO([{?MODULE, "Trying to setup a new peer..."},
+           {ip, RemoteIP},
+           {port, RemotePort},
+           {local_ip, LocalIP},
+           {local_port, LocalPort}]),
+    
+    ConnectArgs = [{ip, LocalIP},
+                   {port, LocalPort},
+                   binary,
+                   {active, false},
+                   {packet, 2},
+                   {keepalive, true}],
+    Status = gen_tcp:connect(RemoteIP, RemotePort,
+                             ConnectArgs,
+                             ?TIMEOUT),
     case Status of
         {ok, Socket} -> 
             {ok, Pid} = supervisor:start_child(?MODULE, [Socket]),
             gen_tcp:controlling_process(Socket, Pid),
             MRef = monitor(process, Pid),
-            {ok, Pid, MRef};
+            
+            ?INFO([{?MODULE, "Setup of peer successful..."},
+                   {node, Node}]),
+            peer(Node, Pid, MRef);
         Err ->
+            ?ERROR([{?MODULE, "Setup of peer failed..."},
+                    {node, Node},
+                    Err]),
+            Err
+    end;
+new_peer(Node, Pid) when is_record(Node, node) andalso is_pid(Pid)->
+    MRef = monitor(process, Pid),
+    peer(Node, Pid, MRef).
+
+%% @doc Used to create a temporary connection, used to reply to a shuffle request
+%%      NOTE: Could probably define a new function that combines both new_peer/new_temp_peer.
+new_temp_peer(Node=#node{ip=RemoteIP, port=RemotePort}, LocalIP) ->
+    ?INFO([{?MODULE, "Trying to setup a new temporary peer..."},
+           {ip, RemoteIP},
+           {port, RemotePort},
+           {local_ip, LocalIP}]),
+    
+    ConnectArgs = [{ip, LocalIP},
+                   binary,
+                   {active, false},
+                   {packet, 2},
+                   {keepalive, true}],
+    Status = gen_tcp:connect(RemoteIP, RemotePort,
+                             ConnectArgs,
+                             ?TIMEOUT),
+    case Status of
+        {ok, Socket} -> 
+            {ok, Pid} = supervisor:start_child(?MODULE, [Socket]),
+            gen_tcp:controlling_process(Socket, Pid),
+            
+            ?INFO([{?MODULE, "Setup of temporary peer successful..."},
+                   {node, Node}]),
+            peer(Node, Pid, temporary);
+        Err ->
+            ?ERROR([{?MODULE, "Setup of temporary peer failed..."},
+                    {node, Node},
+                    Err]),
             Err
     end.
 
@@ -47,41 +98,45 @@ start_connection(#node{ip=IPAddr, port=Port}, #node{ip=MyIPAddr}) ->
 %%% Supervisor callbacks
 %%%===================================================================
 
-init(#node{ip=IPAddr, port=Port}) ->
+init([Recipient, #node{ip=IPAddr, port=Port}]) ->
+    error_logger:info_report([{?MODULE, "Initializing..."},
+                              {recipient, Recipient},
+                              {ip, IPAddr},
+                              {port, Port}]),
     {ok, ListenSocket} = gen_tcp:listen(Port, [{ip, IPAddr},
                                                {reuseaddr, true},
                                                binary,
                                                {active, once},
                                                {packet, 2},
                                                {keepalive, true}]),
+    WorkerArgs = [ListenSocket, Recipient],
     ConnectionWorkers = {connect,
-                         {connect, start_link, [ListenSocket]},
-                         temporary, 5000, worker, [connect]},
+                         {connect, start_link, WorkerArgs},
+                         transient, 5000, worker, [connect]},
+
+    ?INFO([{?MODULE, "Staring listeners..." },
+           {ip, IPAddr},
+           {port, Port}]),
     spawn_link(fun empty_listeners/0),
+
     {ok, {{simple_one_for_one, 5, 10}, [ConnectionWorkers]}}.
 
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
 
+start_listener() ->
+    supervisor:start_child(?MODULE, []).
+
+-spec peer(Node :: #node{}, Pid :: pid(), MRef :: reference()) ->
+                  #peer{}.
+%% @pure
+%% @doc Create a new peer entry for given Node, Pid and MRef
+peer(Node, Pid, MRef) ->
+    #peer{id=Node, pid=Pid, mref=MRef}.
+
 -spec empty_listeners() -> ok.
 %% @doc Start 20 idle listeners
 empty_listeners() ->
     [start_listener() || _ <- lists:seq(1,20)],
     ok.
-
-
-%% TEST CODE
-test_nodes() ->
-    IP = {127,0,0,1},
-    {#node{ip=IP, port=6000}, #node{ip=IP, port=6001}}.
-
-test(Ind) ->
-    register(hypar_man, self()),
-    {A,B} = test_nodes(),
-    {C,D} = case Ind of
-                true -> {A,B};
-                false -> {B,A}
-            end,
-    {ok, Pid} = connect_sup:start_link(C),
-    {Pid, C, D}.

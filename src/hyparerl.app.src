@@ -14,7 +14,8 @@
          {prwl, 3},
          {kactive, 3},
          {kpassive, 4},
-         {ipaddr, {127,0,0,1}},
-         {port, 6666}
+         {ip, {127,0,0,1}},
+         {port, 6000},
+         {shuffle_period, 30000}
          ]}
  ]}.
