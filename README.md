@@ -33,17 +33,17 @@ A quick rundown of what each module does:
 
 Application parameters
 =======================
-*active_size*: The size of the active view.
-*passive_size*: The size of the passive view.
-*arwl*: Active Random Walk Length.
-*prwl*: Passive Random Walk Length.
-*kactive*: The number of nodes to take from active view when doing a shuffle.
-*kpassive*: The number of nodes to take from the passive view when doing a shuffle.
-*ip*: Which the local interface/ip address to use.
-*port*: Which the local port to use.
-*shuffle_period*: Defines the cyclic period of when to do a shuffle.
-*contact_node*: Defines a contact node that the node may try an connect to right away at startup.
-*recipient*: The registered process which should receive all messages sent to this node.
-*notify*: The registered process which should receive neighbourup and neighbourdown events. (Used in plumtree).
+**active_size*: The size of the active view.
+**passive_size*: The size of the passive view.
+**arwl*: Active Random Walk Length.
+**prwl*: Passive Random Walk Length.
+**kactive*: The number of nodes to take from active view when doing a shuffle.
+**kpassive*: The number of nodes to take from the passive view when doing a shuffle.
+**ip*: Which the local interface/ip address to use.
+**port*: Which the local port to use.
+**shuffle_period*: Defines the cyclic period of when to do a shuffle.
+**contact_node*: Defines a contact node that the node may try an connect to right away at startup.
+**recipient*: The registered process which should receive all messages sent to this node.
+**notify*: The registered process which should receive neighbourup and neighbourdown events. (Used in plumtree).
 
 
