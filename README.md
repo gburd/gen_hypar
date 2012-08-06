@@ -14,19 +14,21 @@ The protocol is implemented as an Erlang-application, according to the OTP-stand
                         connect
 
 A quick rundown of what each module does:
+
 *hyparerl_sup:*
         Top-level supervisor
+
 
 *hypar_man:*
         Contains all the node logic and protocol implementation
 
+
 *connect_sup:*
-        A socket-acceptor that accepts incoming connections and supervises
-        all open connections.
+        A socket-acceptor that accepts incoming connections and supervises all open connections.
+
 
 *connect:*
-        A module that takes care of open connections, does some serialization
-        and multiplexing of control-messages as well as ordinary messages.
+        A module that takes care of open connections, does some serialization and multiplexing of control-messages as well as ordinary messages.
 
 
 Application parameters
