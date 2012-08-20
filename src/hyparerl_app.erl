@@ -27,7 +27,7 @@
 -behaviour(application).
 
 %% Application callbacks
--export([start/2, stop/1, test_help/1]).
+-export([start/2, stop/1, test_node/1]).
 
 %% ===================================================================
 %% Application callbacks
@@ -43,7 +43,7 @@ start(_StartType, _StartArgs) ->
                                       true -> Acc0;
                                       false -> [OptPair|Acc0]
                                   end
-                          end, Options, default_options()),
+                          end, Options0, default_options()),
     hyparerl_sup:start_link(Options).
 
 stop(_State) ->

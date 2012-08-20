@@ -12,9 +12,6 @@
 
 -define(ERR(Error, Text), io:format("Error: ~p~nMessage: ~s~n", [Error, Text])).
 
--record(node, {ip,
-               port}).
-
 -record(state, {id,
                 active_view = [],
                 passive_view = [],
@@ -62,7 +59,7 @@ shuffle_reply(Pid, ExchangeList, Ref) ->
     send(Pid, {shuffle_reply, ExchangeList, Ref}).
 
 %% Neighbour up/down
-notify(none, Msg) ->
+notify(none, _Msg) ->
     ok;
 notify(Pid, Msg) ->
     gen_server:cast(Pid, Msg).

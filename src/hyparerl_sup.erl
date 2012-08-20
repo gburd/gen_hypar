@@ -55,4 +55,4 @@ init([Options]) ->
     ConnectionSup = {connect_sup,
                      {connect_sup, start_link, [Recipient, ThisNode]},
                      permanent, 5000, supervisor, [connect_sup]},
-    {ok, { {one_for_one, 5, 10}, [Manager, ConnectionSup]} }.
+    {ok, { {one_for_one, 5, 10}, [Node, ConnectionSup]} }.

@@ -9,3 +9,4 @@ priv
 #*
 .#*
 *.dump
+ebin/hyparerl.app
