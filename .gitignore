@@ -1,6 +1,11 @@
+
 .eunit
 deps
 priv
 *.o
 *.beam
 *.plt
+*~
+#*
+.#*
+*.dump

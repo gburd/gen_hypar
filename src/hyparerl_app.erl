@@ -34,20 +34,28 @@
 %% ===================================================================
 
 start(_StartType, _StartArgs) ->
-    hyparerl_sup:start_link(application:get_all_env(hyparerl)).
+    Options0 = application:get_all_env(hyparerl),
+
+    %% Ensure that all nessecary parameters are defined, default those who
+    %% are not defined.
+    Options = lists:foldl(fun({Opt, Val}=OptPair, Acc0) ->
+                                  case proplists:is_defined(Opt, Acc0)  of
+                                      true -> Acc0;
+                                      false -> [OptPair|Acc0]
+                                  end
+                          end, Options, default_options()),
+    hyparerl_sup:start_link(Options).
 
 stop(_State) ->
     ok.
 
-
-
-test_help(Port) ->
+test_node(Port) ->
     application:load(hyparerl),
-    application:set_env(hyparerl, port, Port),
+    application:set_env(hyparerl, id, {{127,0,0,1}, Port}),
     application:set_env(contact_node, {{127,0,0,1}, 6000}),
     application:start(hyparerl).
 
-%% @doc Default options for the hyparview-manager
+%% @doc Default options for the hyparview-application
 default_options() ->
     [{id, {{127,0,0,1}, 6000}},
      {active_size, 5},
@@ -56,7 +64,8 @@ default_options() ->
      {prwl, 3},
      {k_active, 3},
      {k_passive, 4},
-     {shuffle_period, 10000},
+     {shuffle_period, 10},
      {shuffle_buffer, 5},
+     {contact_node, none},
      {notify, none},
      {recipient, none}].
