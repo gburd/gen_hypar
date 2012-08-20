@@ -37,13 +37,12 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
--define(TIMEOUT, infinity).
-
 -include("hyparerl.hrl").
 
 %% Local state
--record(conn_st, {socket     :: inet:socket(),
-                  recipient  :: atom()}).
+-record(conn_st, {socket,
+                  recipient}).
+
 
 %%%===================================================================
 %%% API
@@ -59,21 +58,18 @@ start_link(_ListenSocket, Recipient, Socket) ->
     Args = [connect, Socket, Recipient],
     gen_server:start_link(?MODULE, Args, []).
 
--spec send_control(Peer :: #peer{}, Msg :: any()) -> ok.
 %% @doc Send a control message (i.e node -> node)
-send_control(Peer, Msg) ->
-    gen_server:cast(Peer#peer.pid, {control, Msg}).
+send_control(Pid, Msg) ->
+    gen_server:cast(Pid, {control, Msg}).
 
--spec send_message(Peer :: #peer{}, Msg :: any()) -> ok.
 %% @doc Send a message to a peer, this will be routed to the configured
 %%      recipient process. (For example the plumtree service)
-send_message(Peer, Msg) ->
-    gen_server:cast(Peer#peer.pid, {message, Msg}).
+send_message(Pid, Msg) ->
+    gen_server:cast(Pid, {message, Msg}).
 
--spec kill(Peer :: #peer{}) -> ok.
 %% @doc Kill a tcp-handler
-kill(Peer) ->
-    gen_server:cast(Peer#peer.pid, kill).
+kill(Pid) ->
+    gen_server:cast(Pid, kill).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -81,17 +77,17 @@ kill(Peer) ->
 
 %% Either initiate a connection via a listen socket or existing socket
 init([listen, ListenSocket, Recipient]) ->
-    ?INFO([{?MODULE, "Starting a listening connection-handler..."},
-           {pid, self()}]),
 
+    %% This is a listen-handler.
+    %% Send a message to self to start listen on socket
     gen_server:cast(self(), accept),
     ConnSt = #conn_st{socket=ListenSocket,
                       recipient=Recipient},
     {ok, ConnSt};
 init([connect, Socket, Recipient]) ->
-    ?INFO([{?MODULE, "Starting a connection-handler on existing socket..."},
-           {pid, self()}]),
-    
+
+    %% This is a open connection handler, set to active once and
+    %% start receiving data
     inet:setopts(Socket, [{active, once}]),
     ConnSt = #conn_st{socket=Socket,
                       recipient=Recipient},
@@ -99,67 +95,62 @@ init([connect, Socket, Recipient]) ->
 
 %% Handle the sending of messages
 handle_cast(Msg={message, _Payload}, ConnSt=#conn_st{socket=Socket}) ->
-    ?INFO([{?MODULE, "Sending message..."},
-           {pid, self()}]),
-
     send(Socket, Msg),
     {noreply, ConnSt};
 
 %% Handle the sending of control-messages
 handle_cast(Msg={control, Payload}, ConnSt=#conn_st{socket=Socket}) ->
-    ?INFO([{?MODULE, "Sending control-message..."},
-           {pid, self()},
-           {msg, Payload}]),
-
     send(Socket, Msg),
     {noreply, ConnSt};
 
 %% Accept an incoming connection
 handle_cast(accept, ConnSt=#conn_st{socket=ListenSocket}) ->
+    %% Accept an incoming connection
     {ok, Socket} = gen_tcp:accept(ListenSocket),
-    ?INFO([{?MODULE, "Accepting an incoming connection..."},
-           {pid, self()}]),
 
+    %% Start a new listener
     connect_sup:start_listener(),
     {noreply, ConnSt#conn_st{socket=Socket}};
 
 %% Kill the connection
 handle_cast(kill, ConnSt=#conn_st{socket=Socket}) ->
-    ?INFO([{?MODULE, "Killing connection..."},
-           {pid, self()}]),
-
     gen_tcp:close(Socket),
     {stop, normal, ConnSt}.
 
-%% Take care of incoming tcp-data
+%% Take care of incoming tcp-data, no recipient of messages
+handle_info({tcp, Socket, Data}, ConnSt=#conn_st{recipient=none}) ->
+    %% Decode the packet (Should probably use own decoding routines)
+    case binary_to_term(Data) of
+        {control, Msg} ->
+            gen_server:cast(hypar_node, {Msg, self()});
+        {message, Msg} -> 
+            ok
+    end,
+
+    %% Set the socket to active once
+    inet:setopts(Socket, [{active, once}]),
+    {noreply, ConnSt};
+
+%% Same as above but we take care of received messages
 handle_info({tcp, Socket, Data}, ConnSt=#conn_st{recipient=Recipient}) ->
+    %% Decode the packet (Should probably use own decoding routines)
     case binary_to_term(Data) of
         {message, Msg} -> 
-            ?INFO([{?MODULE, "Received a message, sending it to recipient..."},
-                   {pid, self()},
-                   {recipient, Recipient}]),
             gen_server:cast(Recipient, {Msg, self()});
         {control, Msg} ->
-            ?INFO([{?MODULE, "Received a control-message, sending it to manager..."},
-                   {pid, self()}]),
-            gen_server:cast(hypar_man, {Msg, self()})
+            gen_server:cast(hypar_node, {Msg, self()})
     end,
+
+    %% Set the socket to active once
     inet:setopts(Socket, [{active, once}]),
     {noreply, ConnSt};
 
 %% If the connection is closed, stop the handler
 handle_info({tcp_closed, _Socket}, ConnSt) ->
-    ?INFO([{?MODULE, "TCP-connection closed..."},
-           {pid, self()}]),
-    
     {stop, normal, ConnSt};
 
 %% If the connection experience an error, stop the handler
 handle_info({tcp_error, _Socket, Reason}, ConnSt) ->
-    ?ERROR([{?MODULE, "TCP-connection experienced an error, closing it..."},
-            {error, Reason},
-            {pid, self()}]),
-    
     {stop, normal, ConnSt}.
 
 %% No handle_call used
@@ -176,7 +167,6 @@ code_change(_OldVsn, Conn_St, _Extra) ->
 %%% Internal functions
 %%%===================================================================    
 
--spec send(Socket :: gen_tcp:socket(), Msg :: any()) -> ok | {error, term()}.
 %% Wrapper for gen_tcp:send and term_to_binary.
 send(Socket, Msg) ->
     gen_tcp:send(Socket, term_to_binary(Msg)).

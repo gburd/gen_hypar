@@ -39,8 +39,24 @@ start(_StartType, _StartArgs) ->
 stop(_State) ->
     ok.
 
+
+
 test_help(Port) ->
     application:load(hyparerl),
     application:set_env(hyparerl, port, Port),
     application:set_env(contact_node, {{127,0,0,1}, 6000}),
     application:start(hyparerl).
+
+%% @doc Default options for the hyparview-manager
+default_options() ->
+    [{id, {{127,0,0,1}, 6000}},
+     {active_size, 5},
+     {passive_size, 30},
+     {arwl, 6},
+     {prwl, 3},
+     {k_active, 3},
+     {k_passive, 4},
+     {shuffle_period, 10000},
+     {shuffle_buffer, 5},
+     {notify, none},
+     {recipient, none}].

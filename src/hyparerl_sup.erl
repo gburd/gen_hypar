@@ -46,15 +46,13 @@ start_link(Options) ->
 %% ===================================================================
 
 init([Options]) ->
-    IP = proplists:get_value(ip, Options),
-    Port = proplists:get_value(port, Options),
+    ThisNode = proplists:get_value(id, Options),
     Recipient = proplists:get_value(recipient, Options),
-    Myself = #node{ip=IP, port=Port},
 
-    Manager = {hypar_man,
-               {hypar_man, start_link, [Myself, Options]},
-               permanent, 5000, worker, [hypar_man]},
+    Node = {hypar_node,
+            {hypar_node, start_link, [Options]},
+            permanent, 5000, worker, [hypar_man]},
     ConnectionSup = {connect_sup,
-                     {connect_sup, start_link, [Recipient, Myself]},
+                     {connect_sup, start_link, [Recipient, ThisNode]},
                      permanent, 5000, supervisor, [connect_sup]},
     {ok, { {one_for_one, 5, 10}, [Manager, ConnectionSup]} }.

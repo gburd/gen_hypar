@@ -282,6 +282,9 @@ handle_cast({{shuffle, Node, _TTL, ExchangeList}, _SenderPid}, State) ->
 
     case connect_sup:new_temp_peer(Node, Myself#node.ip) of
         Peer=#peer{} ->
+            ?INFO([?MODULE,
+                   "Received a shuffle message... sending a shuffle-reply...",
+                   
             shuffle_reply(Peer, ReplyList),
             kill(Peer),
             {noreply, integrate_exchange_list(State, ExchangeList, ReplyList)};
@@ -655,14 +658,3 @@ get_option(Option, Options) ->
     end.
 
 -spec default_options() -> list(option()).
-%% @doc Default options for the hyparview-manager
-default_options() ->
-    [{ip, {127,0,0,1}},
-     {port, 6000},
-     {active_size, 5},
-     {passive_size, 30},
-     {arwl, 6},
-     {prwl, 3},
-     {k_active, 3},
-     {k_passive, 4},
-     {shuffle_period, 30000}].
