@@ -2,7 +2,8 @@
 
 -behaviour(gen_server).
 
--export([start_link/1, join_cluster/1]).
+-export([start_link/1, control_msg/1, join_cluster/1,
+         get_peers/0, get_passive_peers/0, get_all_peers/0]).
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
@@ -23,11 +24,29 @@
 
 %% API
 
+%% Start the node
 start_link(Options) ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, Options, []).
 
+%% Join a cluster via ContactNode
 join_cluster(ContactNode) ->
     gen_server:cast(self(), {join_cluster, ContactNode}).
+
+%% Get all the current active peers
+get_peers() ->
+    gen_server:call(?MODULE, get_peers).
+
+%% Get all the current passive peers
+get_passive_peers() ->
+    gen_server:call(?MODULE, get_passive_peers).
+
+%% Get all the current peers
+get_all_peers() ->
+    gen_server:call(?MODULE, get_all_peers).
+
+%% @doc Send a control message (i.e node -> node)
+control_msg(Msg) ->
+    gen_server:cast(hypar_node, {Msg, self()}).
 
 %% Messages
 
@@ -188,7 +207,7 @@ handle_cast(?MSG({disconnect, Sender}, SenderPid), State0) ->
     %% Disconnect the peer, kill the connection and add node to passive view
     Active = lists:keydelete(Sender, 1, Active0),
     erlang:demonitor(MRef, [flush]),
-    connect_sup:kill(SenderPid),
+    connect:kill(SenderPid),
     neighbour_down(Notify, ThisNode, Sender),
     State = add_node_passive(Sender, State0),
     {noreply, State#state{active_view=Active}};
@@ -245,7 +264,7 @@ handle_cast(?MSG({neighbour_decline, Sender}, SenderPid), State0) ->
 
     {Sender, SenderPid, MRef} = lists:keyfind(Sender, 1, NRequests0),
     erlang:demonitor(MRef, [flush]),
-    connect_sup:kill(SenderPid),
+    connect:kill(SenderPid),
 
     NRequests = lists:keydelete(Sender, 1, NRequests0),
     State = find_new_active(State0#state{nreqs=NRequests}),
@@ -319,7 +338,7 @@ handle_cast(?MSG({shuffle_reply, ReplyList, Ref}, SenderPid), State0) ->
     #state{shuffle_history=ShuffleHist0} = State0,
 
     %% Kill the temporary connection
-    connect_sup:kill(SenderPid),
+    connect:kill(SenderPid),
 
     case lists:keyfind(Ref, 1, ShuffleHist0) of
         %% Clean up the shuffle history, add the reply list to passive view
@@ -388,11 +407,12 @@ code_change(_OldVsn, State, _Extra) ->
 terminate(_Reason, State) ->
     lists:foreach(fun({_Node, Pid, MRef}) ->
                           erlang:demonitor(MRef),
-                          connect_sup:kill(Pid)
+                          connect:kill(Pid)
                   end, State#state.active_view),
     ok.
 
 %% Internal
+
 send(Pid, Msg) ->
     connect:send_control(Pid, Msg).
 

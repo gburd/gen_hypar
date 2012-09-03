@@ -43,6 +43,7 @@
 -record(conn_st, {socket,
                   recipient}).
 
+-define(ERR(Error, Text), io:format("Error: ~p~nMessage: ~s~n", [Error, Text])).
 
 %%%===================================================================
 %%% API
@@ -58,14 +59,14 @@ start_link(_ListenSocket, Recipient, Socket) ->
     Args = [connect, Socket, Recipient],
     gen_server:start_link(?MODULE, Args, []).
 
-%% @doc Send a control message (i.e node -> node)
-send_control(Pid, Msg) ->
-    gen_server:cast(Pid, {control, Msg}).
-
 %% @doc Send a message to a peer, this will be routed to the configured
 %%      recipient process. (For example the plumtree service)
 send_message(Pid, Msg) ->
     gen_server:cast(Pid, {message, Msg}).
+
+%% @doc Send a control message (i.e node -> node)
+send_control(Pid, Msg) ->
+    gen_server:cast(Pid, {control, Msg}).
 
 %% @doc Kill a tcp-handler
 kill(Pid) ->
@@ -80,10 +81,9 @@ init([listen, ListenSocket, Recipient]) ->
 
     %% This is a listen-handler.
     %% Send a message to self to start listen on socket
-    gen_server:cast(self(), accept),
     ConnSt = #conn_st{socket=ListenSocket,
                       recipient=Recipient},
-    {ok, ConnSt};
+    {ok, ConnSt, 0};
 init([connect, Socket, Recipient]) ->
 
     %% This is a open connection handler, set to active once and
@@ -99,46 +99,23 @@ handle_cast(Msg={message, _Payload}, ConnSt=#conn_st{socket=Socket}) ->
     {noreply, ConnSt};
 
 %% Handle the sending of control-messages
-handle_cast(Msg={control, Payload}, ConnSt=#conn_st{socket=Socket}) ->
+handle_cast(Msg={control, _Payload}, ConnSt=#conn_st{socket=Socket}) ->
     send(Socket, Msg),
     {noreply, ConnSt};
-
-%% Accept an incoming connection
-handle_cast(accept, ConnSt=#conn_st{socket=ListenSocket}) ->
-    %% Accept an incoming connection
-    {ok, Socket} = gen_tcp:accept(ListenSocket),
-
-    %% Start a new listener
-    connect_sup:start_listener(),
-    {noreply, ConnSt#conn_st{socket=Socket}};
 
 %% Kill the connection
 handle_cast(kill, ConnSt=#conn_st{socket=Socket}) ->
     gen_tcp:close(Socket),
     {stop, normal, ConnSt}.
 
-%% Take care of incoming tcp-data, no recipient of messages
-handle_info({tcp, Socket, Data}, ConnSt=#conn_st{recipient=none}) ->
-    %% Decode the packet (Should probably use own decoding routines)
-    case binary_to_term(Data) of
-        {control, Msg} ->
-            gen_server:cast(hypar_node, {Msg, self()});
-        {message, Msg} -> 
-            ok
-    end,
-
-    %% Set the socket to active once
-    inet:setopts(Socket, [{active, once}]),
-    {noreply, ConnSt};
-
-%% Same as above but we take care of received messages
+%% Take care of incoming tcp-data
 handle_info({tcp, Socket, Data}, ConnSt=#conn_st{recipient=Recipient}) ->
     %% Decode the packet (Should probably use own decoding routines)
     case binary_to_term(Data) of
         {message, Msg} -> 
             gen_server:cast(Recipient, {Msg, self()});
         {control, Msg} ->
-            gen_server:cast(hypar_node, {Msg, self()})
+            hypar_node:control_msg(Msg)
     end,
 
     %% Set the socket to active once
@@ -151,7 +128,16 @@ handle_info({tcp_closed, _Socket}, ConnSt) ->
 
 %% If the connection experience an error, stop the handler
 handle_info({tcp_error, _Socket, Reason}, ConnSt) ->
-    {stop, normal, ConnSt}.
+    ?ERR({tcp_error, Reason}, "Error with a tcp-connection."),
+    {stop, normal, ConnSt};
+
+%% Accept an incoming connection
+handle_info(timeout, ConnSt=#conn_st{socket=ListenSocket}) ->
+    {ok, Socket} = gen_tcp:accept(ListenSocket),
+    
+    %% Start a new listener
+    connect_sup:start_listener(),
+    {noreply, ConnSt#conn_st{socket=Socket}}.
 
 %% No handle_call used
 handle_call(_Msg, _From, ConnSt) ->
