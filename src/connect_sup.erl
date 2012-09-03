@@ -30,8 +30,7 @@
 -behaviour(supervisor).
 
 %% API
--export([start_link/2, start_listener/0,
-         start_connection/2, start_temp_connection/2]).
+-export([start_link/1]).
 
 %% Supervisor callbacks
 -export([init/1]).
@@ -42,79 +41,16 @@
 %% API functions
 %%===================================================================
 
-start_link(Recipient, Myself) ->
-    supervisor:start_link({local, ?MODULE}, ?MODULE, [Recipient, Myself]).
-
-%% @doc Start a new connection, returning a pid and a monitor if
-%% successful otherwise it returns an error.
-start_connection({RemoteIP, RemotePort}, {LocalIP, LocalPort}) ->
-    ConnectArgs = [{ip, LocalIP},
-                   {port, LocalPort},
-                   binary,
-                   {active, false},
-                   {packet, 4},
-                   {keepalive, true}],
-    case gen_tcp:connect(RemoteIP, RemotePort, ConnectArgs, ?TIMEOUT) of
-        {ok, Socket} -> 
-            {ok, Pid} = supervisor:start_child(?MODULE, [Socket]),
-            gen_tcp:controlling_process(Socket, Pid),
-            MRef = erlang:monitor(process, Pid),            
-            {ok, Pid, MRef};
-        Err ->
-            Err
-    end.
-
-%% @doc Used to create a temporary connection, used to reply to a shuffle-
-%%      request. Does not monitor the temporary connection.
-start_temp_connection({RemoteIP, RemotePort}, {LocalIP, _LocalPort}) ->
-
-    ConnectArgs = [{ip, LocalIP},
-                   {port, ?TEMP_PORT},
-                   binary,
-                   {active, false},
-                   {packet, 4},
-                   {keepalive, true}],
-    case gen_tcp:connect(RemoteIP, RemotePort, ConnectArgs, ?TIMEOUT) of
-        {ok, Socket} -> 
-            {ok, Pid} = supervisor:start_child(?MODULE, [Socket]),
-            gen_tcp:controlling_process(Socket, Pid),
-            
-            {ok, Pid};
-        Err ->
-            Err
-    end.
+start_link(Recipient) ->
+    supervisor:start_link({local, ?MODULE}, ?MODULE, [Recipient]).
 
 %%%===================================================================
 %%% Supervisor callbacks
 %%%===================================================================
 
-init([Recipient, {IPAddr, Port}]) ->
-
-    {ok, ListenSocket} = gen_tcp:listen(Port, [{ip, IPAddr},
-                                               {reuseaddr, true},
-                                               binary,
-                                               {active, once},
-                                               {packet, 4},
-                                               {keepalive, true}]),
-    WorkerArgs = [ListenSocket, Recipient],
+init([Recipient]) ->
     ConnectionWorkers = {connect,
-                         {connect, start_link, WorkerArgs},
-                         transient, 5000, worker, [connect]},
-
-    %% Spawn 20 initial listeners
-    spawn_link(fun empty_listeners/0),
+                         {connect, start_link, [Recipient]},
+                         temporary, brutal_kill, worker, [connect]},
 
     {ok, {{simple_one_for_one, 5, 10}, [ConnectionWorkers]}}.
-
-%%%===================================================================
-%%% Internal functions
-%%%===================================================================
-
-%% @doc Start a new listener
-start_listener() ->
-    supervisor:start_child(?MODULE, []).
-
-%% @doc Start 20 idle listeners
-empty_listeners() ->
-    [start_listener() || _ <- lists:seq(1,20)],
-    ok.

@@ -27,7 +27,7 @@
 -behaviour(application).
 
 %% Application callbacks
--export([start/2, stop/1, test_node/1]).
+-export([start/2, stop/1]).
 
 %% ===================================================================
 %% Application callbacks
@@ -38,7 +38,7 @@ start(_StartType, _StartArgs) ->
 
     %% Ensure that all nessecary parameters are defined, default those who
     %% are not defined.
-    Options = lists:foldl(fun({Opt, Val}=OptPair, Acc0) ->
+    Options = lists:foldl(fun({Opt, _}=OptPair, Acc0) ->
                                   case proplists:is_defined(Opt, Acc0)  of
                                       true -> Acc0;
                                       false -> [OptPair|Acc0]
@@ -49,22 +49,17 @@ start(_StartType, _StartArgs) ->
 stop(_State) ->
     ok.
 
-test_node(Port) ->
-    application:load(hyparerl),
-    application:set_env(hyparerl, id, {{127,0,0,1}, Port}),
-    application:set_env(contact_node, {{127,0,0,1}, 6000}),
-    application:start(hyparerl).
-
 %% @doc Default options for the hyparview-application
 default_options() ->
     [{id, {{127,0,0,1}, 6000}},
+     {temp_port, 5999},
      {active_size, 5},
      {passive_size, 30},
      {arwl, 6},
      {prwl, 3},
      {k_active, 3},
      {k_passive, 4},
-     {shuffle_period, 10},
+     {shuffle_period, 10000},
      {shuffle_buffer, 5},
      {contact_node, none},
      {notify, none},

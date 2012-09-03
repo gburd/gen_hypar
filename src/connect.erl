@@ -28,14 +28,11 @@
 
 -author('Emil Falk <emil.falk.1988@gmail.com>').
 
--behaviour(gen_server).
-
 %% API
--export([start_link/2, start_link/3, send_control/2, send_message/2, kill/1]).
+-export([start_link/1, start_link/4, new_connection/2, new_temp_connection/2,
+         send_control/2, send_message/2, kill/1]).
 
-%% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2,
-         terminate/2, code_change/3]).
+-export([init/1, init/3]).
 
 -include("hyparerl.hrl").
 
@@ -50,109 +47,137 @@
 %%%===================================================================
 
 %% @doc Start a tcp-handler that accepts connections from a listen-socket
-start_link(ListenSocket, Recipient) ->
-    Args = [listen, ListenSocket, Recipient],
-    gen_server:start_link(?MODULE, Args, []).
+start_link(ListenerPid, Socket, _Transport, [Recipient]) ->
+    Args = [ListenerPid, Socket, Recipient],
+    Pid = spawn_link(?MODULE, init, Args),
+    {ok, Pid}.
 
-%% @doc Start a tcp-handler with a started tcp-connection
-start_link(_ListenSocket, Recipient, Socket) ->
-    Args = [connect, Socket, Recipient],
-    gen_server:start_link(?MODULE, Args, []).
+%% @doc Start a tcp-connection
+start_link(Recipient) ->
+    Pid = spawn_link(?MODULE, init, [Recipient]),
+    {ok, Pid}.
+
+%% @doc Start a new connection, returning a pid and a monitor if
+%% successful otherwise it returns an error.
+new_connection(NodeA, NodeB) ->
+    new_connection(NodeA, NodeB, true).
+
+%% @doc Same as above but won't monitor the connection since it's only temporary.
+new_temp_connection(NodeA, NodeB) ->
+    new_connection(NodeA, NodeB, false).
 
 %% @doc Send a message to a peer, this will be routed to the configured
 %%      recipient process. (For example the plumtree service)
 send_message(Pid, Msg) ->
-    gen_server:cast(Pid, {message, Msg}).
+    Pid ! {message, Msg}.
 
 %% @doc Send a control message (i.e node -> node)
 send_control(Pid, Msg) ->
-    gen_server:cast(Pid, {control, Msg}).
+    Pid ! {control, Msg}.
 
 %% @doc Kill a tcp-handler
 kill(Pid) ->
-    gen_server:cast(Pid, kill).
+    Pid ! kill.
 
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
 
-%% Either initiate a connection via a listen socket or existing socket
-init([listen, ListenSocket, Recipient]) ->
+%% Either initiate a connection via a listen socket(ranch) or existing socket
+init(ListenerPid, Socket, Recipient) ->
+    ok = ranch:accept_ack(ListenerPid),
+    
+    ranch_tcp:setopts(Socket, [{active, once}]),
 
-    %% This is a listen-handler.
-    %% Send a message to self to start listen on socket
-    ConnSt = #conn_st{socket=ListenSocket,
-                      recipient=Recipient},
-    {ok, ConnSt, 0};
-init([connect, Socket, Recipient]) ->
-
-    %% This is a open connection handler, set to active once and
-    %% start receiving data
-    inet:setopts(Socket, [{active, once}]),
     ConnSt = #conn_st{socket=Socket,
                       recipient=Recipient},
-    {ok, ConnSt}.
+    loop(ConnSt).
 
-%% Handle the sending of messages
-handle_cast(Msg={message, _Payload}, ConnSt=#conn_st{socket=Socket}) ->
-    send(Socket, Msg),
-    {noreply, ConnSt};
+init(Recipient) ->
+    ConnSt = #conn_st{recipient=Recipient},
+    pre_loop(ConnSt).
 
-%% Handle the sending of control-messages
-handle_cast(Msg={control, _Payload}, ConnSt=#conn_st{socket=Socket}) ->
-    send(Socket, Msg),
-    {noreply, ConnSt};
+pre_loop(ConnSt) ->
+    receive
+        {socket, Socket, {Pid, Ref}} ->
+            Pid ! {ok, Ref},
+            loop(ConnSt#conn_st{socket=Socket})
+    end.
 
-%% Kill the connection
-handle_cast(kill, ConnSt=#conn_st{socket=Socket}) ->
-    gen_tcp:close(Socket),
-    {stop, normal, ConnSt}.
-
-%% Take care of incoming tcp-data
-handle_info({tcp, Socket, Data}, ConnSt=#conn_st{recipient=Recipient}) ->
-    %% Decode the packet (Should probably use own decoding routines)
-    case binary_to_term(Data) of
-        {message, Msg} -> 
-            gen_server:cast(Recipient, {Msg, self()});
+loop(ConnSt) ->
+    #conn_st{socket=Socket, recipient=Recipient} = ConnSt,
+    receive
+        {message, Msg} ->
+            Bin = term_to_binary({message, Msg}),
+            ranch_tcp:send(Socket, Bin),
+            loop(ConnSt);
         {control, Msg} ->
-            hypar_node:control_msg(Msg)
-    end,
-
-    %% Set the socket to active once
-    inet:setopts(Socket, [{active, once}]),
-    {noreply, ConnSt};
-
-%% If the connection is closed, stop the handler
-handle_info({tcp_closed, _Socket}, ConnSt) ->
-    {stop, normal, ConnSt};
-
-%% If the connection experience an error, stop the handler
-handle_info({tcp_error, _Socket, Reason}, ConnSt) ->
-    ?ERR({tcp_error, Reason}, "Error with a tcp-connection."),
-    {stop, normal, ConnSt};
-
-%% Accept an incoming connection
-handle_info(timeout, ConnSt=#conn_st{socket=ListenSocket}) ->
-    {ok, Socket} = gen_tcp:accept(ListenSocket),
-    
-    %% Start a new listener
-    connect_sup:start_listener(),
-    {noreply, ConnSt#conn_st{socket=Socket}}.
-
-%% No handle_call used
-handle_call(_Msg, _From, ConnSt) ->
-    {stop, not_used, ConnSt}.
-
-terminate(_Reason, _Conn_St) ->
-    ok.
-
-code_change(_OldVsn, Conn_St, _Extra) ->
-    {ok, Conn_St}.
+            Bin = term_to_binary({control, Msg}),
+            ranch_tcp:send(Socket, Bin),
+            loop(ConnSt);
+        kill -> 
+            ranch_tcp:close(Socket),
+            exit(normal);
+        Info ->
+            {OK, Closed, Error} = ranch_tcp:messages(),
+            case Info of
+                {OK, Socket, Data} ->
+                    case binary_to_term(Data) of
+                        {message, Msg} -> 
+                            gen_server:cast(Recipient, {Msg, self()});
+                        {control, Msg} ->
+                            hypar_node:control_msg(Msg)
+                    end,
+                    
+                    %% Set the socket to active once
+                    ranch_tcp:setopts(Socket, [{active, once}]),
+                    loop(ConnSt);
+                {Closed, _Socket} ->
+                    %% Log this?
+                    exit(normal);
+                {Error, Socket, Reason} ->
+                    ?ERR({tcp_error, Socket, Reason},
+                         "Error with a tcp-connection."),
+                    exit(Reason)
+            end
+    end.
 
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================    
 
-%% Wrapper for gen_tcp:send and term_to_binary.
-send(Socket, Msg) ->
-    gen_tcp:send(Socket, term_to_binary(Msg)).
+%% @doc Open up a new connection
+%% @todo Looks like ranch is also gonna export connect later on,
+%%       change from gen_tcp to ranch_tcp
+new_connection({RemoteIP, RemotePort}, _, Monitor) ->
+    ConnectArgs = [{active, false}],
+    case gen_tcp:connect(RemoteIP, RemotePort, ConnectArgs, ?TIMEOUT) of
+        {ok, Socket} -> 
+            io:format("Connected..."),
+            {ok, Pid} = supervisor:start_child(connect_sup, []),
+            ok = socket_ok(Pid, Socket),
+            case Monitor of
+                true ->
+                    MRef = erlang:monitor(process, Pid),            
+                    {ok, Pid, MRef};
+                false ->
+                    {ok, Pid}
+            end;
+        Err ->
+            Err
+    end.
+
+%% @doc Let pid start using socket
+socket_ok(Pid, Socket) ->
+    gen_tcp:controlling_process(Socket, Pid),
+    Ref = make_ref(),
+    MRef = erlang:monitor(process, Pid),
+    Pid ! {socket, Socket, {self(), Ref}},
+    receive
+        {ok, Ref} ->
+            erlang:demonitor(MRef, [flush]),
+            ok;
+        {'DOWN', MRef, process, _, _} ->
+            erlang:demonitor(MRef, [flush]),
+            ok
+    end.

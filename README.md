@@ -40,7 +40,7 @@ Application parameters
 * *prwl*: Passive Random Walk Length. Default 3.
 * *kactive*: The number of nodes to take from active view when doing a shuffle. Default 3.
 * *kpassive*: The number of nodes to take from the passive view when doing a shuffle. Default 4.
-* *shuffle_period*: Defines the cyclic period of when to do a shuffle in seconds. Default 10.
+* *shuffle_period*: Defines the cyclic period of when to do a shuffle in milliseconds. Default 10000.
 * *shuffle_buffer*: Defines how large the shuffle history should be in number of shuffles. Default 5.
 * *contact_node*: Defines a contact node that the node may try an connect to right away at startup. Default none. (o)
 * *recipient*: The registered process which should receive all messages sent to this node. Default none. (o)

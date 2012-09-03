@@ -30,7 +30,7 @@ start_link(Options) ->
 
 %% Join a cluster via ContactNode
 join_cluster(ContactNode) ->
-    gen_server:cast(self(), {join_cluster, ContactNode}).
+    gen_server:cast(?MODULE, {join_cluster, ContactNode}).
 
 %% Get all the current active peers
 get_peers() ->
@@ -46,7 +46,7 @@ get_all_peers() ->
 
 %% @doc Send a control message (i.e node -> node)
 control_msg(Msg) ->
-    gen_server:cast(hypar_node, {Msg, self()}).
+    gen_server:cast(?MODULE, {Msg, self()}).
 
 %% Messages
 
@@ -91,13 +91,23 @@ neighbour_down(Pid, From, To) ->
 
 %% gen_server callbacks
 
-init([Options]) ->
+init(Options) ->
     Msg = {init, Options},
     ?LOG("Init: Initating..."),
 
     %% Seed the random generator!
     random:seed(now()),
 
+    ThisNode = proplists:get_value(id, Options),
+
+    %% Start the tcp-listeners
+    {IP, Port} = ThisNode,
+    Recipient = proplists:get_value(recipient, Options),
+    ListenOpts = [{port,Port},{ip,IP}],
+    {ok, _} = ranch:start_listener(tcp_conn, 100,
+                                   ranch_tcp, ListenOpts,
+                                   connect, [Recipient]),
+    
     %% Initate the shuffle cycle, random start time in
     %% range from now to the period max.
     ShufflePeriod = proplists:get_value(shuffle_period, Options),
@@ -105,7 +115,6 @@ init([Options]) ->
     erlang:send_after(TimeOut, self(), shuffle_time),
 
     %% Construct state
-    ThisNode = proplists:get_value(id, Options),
     Notify = proplists:get_value(notify, Options),
     State = #state{id = ThisNode, opts = Options, notify=Notify},
     {ok, State}.
@@ -116,7 +125,7 @@ handle_cast({join_cluster, ContactNode}=Msg, State0) ->
 
     ThisNode = State0#state.id,
 
-    case connect_sup:start_connection(ContactNode, ThisNode) of
+    case connect:new_connection(ContactNode, ThisNode) of
         %% Connection ok, send a join message to the contact node
         {ok, Pid, MRef} ->
             join(Pid, ThisNode),
@@ -165,7 +174,7 @@ handle_cast(?MSG({forward_join, NewNode, TTL, Sender}, _), State0) ->
 
             %% Add to active view, send a reply to the forward_join to let the
             %% other node know
-            case connect_sup:start_connection(NewNode, ThisNode) of
+            case connect:new_connection(NewNode, ThisNode) of
                 %% Connection OK!
                 {ok, Pid, MRef} ->
                     State = add_node_active(NewNode, Pid, MRef, State1),
@@ -270,41 +279,14 @@ handle_cast(?MSG({neighbour_decline, Sender}, SenderPid), State0) ->
     State = find_new_active(State0#state{nreqs=NRequests}),
     {noreply, State};
 
-%% Timer message for periodic shuffle. Send of a shuffle request to a random
-%% peer in the active view.
-handle_cast(shuffle_time, State0) ->
-    #state{id=ThisNode, active_view=Active,
-           opts=Options, shuffle_history=ShuffleHist0} = State0,
-    XList = create_exchange_list(State0),
-    {Node, Pid, _MRef} = misc:random_elem(Active),
-    ARWL = proplists:get_value(arwl, Options),
-    Ref = erlang:make_ref(),
-
-    shuffle_request(Pid, XList, ARWL, ThisNode, Ref),
-
-    ShufflePeriod = proplists:get_value(shuffle_period, Options),
-    ShuffleBuffer = proplists:get_value(shuffle_buffer, Options),
-    erlang:send_after(ShufflePeriod, self(), shuffle_time),
-
-    %% Cleanup shuffle history and add new shuffle
-    Now = erlang:now(),
-    FilterFun = fun({_,_,Time}) ->
-                        timer:now_diff(Now, Time) < ShufflePeriod*ShuffleBuffer
-                end,
-    ShuffleHist = [{Ref, XList, Now} | lists:filter(FilterFun, ShuffleHist0)],
-
-    Msg = {shuffle_time, XList, ARWL, Node, Now, Ref},
-    ?LOG("Shuffle: Initiating shuffle routine."),
-
-    State = State0#state{shuffle_history=ShuffleHist},
-    {noreply, State};
 %% Respond to a shuffle request, either propagate it or accept it via a
 %% temporary connection to the source of the request. If the node accept then
 %% it add the shuffle list into it's passive view and responds with with
 %% a shuffle reply(including parts of it's own passive view).
 handle_cast(?MSG({shuffle_request, XList, TTL, Sender, Ref}, _), State0) ->
     NextTTL = TTL - 1,
-    #state{id=ThisNode, active_view=Active, passive_view=Passive} = State0,
+    #state{id={IP, _}, opts=Options,
+           active_view=Active, passive_view=Passive} = State0,
 
     case NextTTL > 0 andalso length(Active) > 1 of
         %% Propagate the random walk
@@ -319,7 +301,9 @@ handle_cast(?MSG({shuffle_request, XList, TTL, Sender, Ref}, _), State0) ->
         false ->
             ?LOG("Shuffle-request: Accepting shuffle request."),
 
-            case connect_sup:start_temp_connection(ThisNode, Sender) of
+            TempPort = proplists:get_value(temp_port, Options),
+            TempNode = {IP, TempPort},
+            case connect:new_temp_connection(TempNode, Sender) of
                 {ok, Pid} ->
                     ReplyLength = length(XList),
                     ReplyList = misc:take_n_random(ReplyLength, Passive),
@@ -385,6 +369,53 @@ handle_info({'DOWN', MRef, process, Pid, Reason}, State0) ->
                     State = State0
             end
     end,
+    {noreply, State};
+
+%% Timer message for periodic shuffle. Send of a shuffle request to a random
+%% peer in the active view. Ignore if we don't have any active connections. 
+handle_info(shuffle_time, State0=#state{active_view=[]}) ->
+    #state{opts=Options, shuffle_history=ShuffleHist0} = State0,
+    ShufflePeriod = proplists:get_value(shuffle_period, Options),
+    ShuffleBuffer = proplists:get_value(shuffle_buffer, Options),
+    erlang:send_after(ShufflePeriod, self(), shuffle_time),
+    
+    %% Cleanup shuffle history
+    Now = erlang:now(),
+    FilterFun = fun({_,_,Time}) ->
+                        timer:now_diff(Now, Time) < ShufflePeriod*ShuffleBuffer
+                end,
+    State = State0#state{shuffle_history=lists:filter(FilterFun, ShuffleHist0)},
+    
+    Msg = {shuffle_time, no_active_connections},
+    ?LOG("Shuffle: Initiating shuffle routine but no active connections"),
+    
+    {noreply, State};
+    
+handle_info(shuffle_time, State0) ->
+    #state{id=ThisNode, active_view=Active,
+           opts=Options, shuffle_history=ShuffleHist0} = State0,
+    XList = create_exchange_list(State0),
+    {Node, Pid, _MRef} = misc:random_elem(Active),
+    ARWL = proplists:get_value(arwl, Options),
+    Ref = erlang:make_ref(),
+
+    shuffle_request(Pid, XList, ARWL, ThisNode, Ref),
+
+    ShufflePeriod = proplists:get_value(shuffle_period, Options),
+    ShuffleBuffer = proplists:get_value(shuffle_buffer, Options),
+    erlang:send_after(ShufflePeriod, self(), shuffle_time),
+
+    %% Cleanup shuffle history and add new shuffle
+    Now = erlang:now(),
+    FilterFun = fun({_,_,Time}) ->
+                        timer:now_diff(Now, Time) < ShufflePeriod*ShuffleBuffer
+                end,
+    ShuffleHist = [{Ref, XList, Now} | lists:filter(FilterFun, ShuffleHist0)],
+
+    Msg = {shuffle_time, XList, ARWL, Node, Now, Ref},
+    ?LOG("Shuffle: Initiating shuffle routine."),
+
+    State = State0#state{shuffle_history=ShuffleHist},
     {noreply, State}.
 
 %% Return all active peers
@@ -478,8 +509,8 @@ drop_random_active(State) ->
 create_exchange_list(State) ->
     #state{active_view=Active, passive_view=Passive,
            id=ThisNode, opts=Options} = State,
-    KActive  = proplists:get_value(kactive, Options),
-    KPassive = proplists:get_value(kpassive, Options),
+    KActive  = proplists:get_value(k_active, Options),
+    KPassive = proplists:get_value(k_passive, Options),
 
     RandomActive  = misc:take_n_random(KActive, Active),
     RandomPassive = misc:take_n_random(KPassive, Passive),
@@ -535,7 +566,7 @@ find_neighbour(Priority, Passive, ThisNode) ->
 
 find_neighbour(Priority, Passive0, ThisNode, Tried) ->
     {Node, Passive} = misc:drop_random(Passive0),
-    case connect_sup:start_connection(Node, ThisNode) of
+    case connect_sup:new_connection(Node, ThisNode) of
         {ok, Pid, MRef} ->
             neighbour_request(Pid, ThisNode, Priority),
             {{Node, Pid, MRef}, Passive ++ Tried};
