@@ -1,0 +1,9 @@
+#!/usr/bin/escript
+%% -*- erlang -*-
+%%! -name cmd@localhost -cookie hypar
+
+main(_) ->
+        usage().
+
+usage() ->
+        io:format("usage: hyparcmd cmd options\n").
