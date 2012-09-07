@@ -511,7 +511,7 @@ add_node_passive(Node, State) ->
     AddCondition =
         Node =/= ThisNode andalso
         not lists:keymember(Node, 1, Active) andalso
-        not lists:member(Node, Passive0)]),
+        not lists:member(Node, Passive0),
     if AddCondition ->
             PassiveSize = proplists:get_value(passive_size, Options),
             N = length(Passive0),
