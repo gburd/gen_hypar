@@ -38,6 +38,7 @@
 
 %% Local state
 -record(conn_st, {socket,
+                  data,
                   recipient}).
 
 -define(ERR(Error, Text), io:format("Error: ~p~nMessage: ~s~n", [Error, Text])).
@@ -85,35 +86,38 @@ kill(Pid) ->
 
 %% Either initiate a connection via a listen socket(ranch) or existing socket
 init(ListenerPid, Socket, Recipient) ->
-    ok = ranch:accept_ack(ListenerPid),
-    
+    ok = ranch:accept_ack(ListenerPid),    
     ranch_tcp:setopts(Socket, [{active, once}]),
-
+    
     ConnSt = #conn_st{socket=Socket,
+                      data = <<>>,
                       recipient=Recipient},
+    lager:debug("CONNECT: INCOMING CONNECTION ACCEPTED"),
+    
     loop(ConnSt).
 
 init(Recipient) ->
-    ConnSt = #conn_st{recipient=Recipient},
+    ConnSt = #conn_st{data= <<>>,
+                      recipient=Recipient},
     pre_loop(ConnSt).
 
 pre_loop(ConnSt) ->
     receive
-        {socket, Socket, {Pid, Ref}} ->
+        {socket, Socket, Pid, Ref} ->
             Pid ! {ok, Ref},
+            ranch_tcp:setopts(Socket, [{active, once}]),
+            lager:debug("CONNECT: OUTGOING CONNECTION ESTABLISHED"),
             loop(ConnSt#conn_st{socket=Socket})
     end.
 
 loop(ConnSt) ->
-    #conn_st{socket=Socket, recipient=Recipient} = ConnSt,
+    #conn_st{socket=Socket, recipient=Recipient, data=OldData} = ConnSt,
     receive
         {message, Msg} ->
-            Bin = term_to_binary({message, Msg}),
-            ranch_tcp:send(Socket, Bin),
+            send(Socket, {message,Msg}),
             loop(ConnSt);
         {control, Msg} ->
-            Bin = term_to_binary({control, Msg}),
-            ranch_tcp:send(Socket, Bin),
+            send(Socket, {control, Msg}),
             loop(ConnSt);
         kill -> 
             ranch_tcp:close(Socket),
@@ -122,16 +126,14 @@ loop(ConnSt) ->
             {OK, Closed, Error} = ranch_tcp:messages(),
             case Info of
                 {OK, Socket, Data} ->
-                    case binary_to_term(Data) of
-                        {message, Msg} -> 
-                            gen_server:cast(Recipient, {Msg, self()});
-                        {control, Msg} ->
-                            hypar_node:control_msg(Msg)
-                    end,
-                    
-                    %% Set the socket to active once
+                    {Msgs, Rest} = decode(OldData, Data),
+                    lager:debug("CONNECT: ROUTING MESSAGES ~p, LEFT OVER BINARY ~p",
+                                [Msgs, Rest]),
+                    F = fun(M) -> route_msg(M, Recipient) end,
+                    lists:foreach(F, Msgs),
+
                     ranch_tcp:setopts(Socket, [{active, once}]),
-                    loop(ConnSt);
+                    loop(ConnSt#conn_st{data = Rest});
                 {Closed, _Socket} ->
                     %% Log this?
                     exit(normal);
@@ -146,14 +148,43 @@ loop(ConnSt) ->
 %%% Internal functions
 %%%===================================================================    
 
+decode(OldBin, Bin) ->
+    NewBin = <<OldBin/binary, Bin/binary>>,
+    {Bins, Rest} = packets(NewBin, []),
+    {lists:map(fun erlang:binary_to_term/1, Bins), Rest}.
+
+packets(<<Len:32/big-unsigned-integer, Bin/binary>>=All, Packets) ->
+    case erlang:byte_size(Bin) < Len of
+        true ->
+            {Packets, All};
+        false ->
+            <<Packet:Len/binary, Rest/binary>> = Bin,
+            packets(Rest, [Packet|Packets])
+    end;
+packets(Bin, Packets) ->
+    {Packets, Bin}.
+
+route_msg({message, Msg}, Recipient) ->
+    gen_server:cast(Recipient, {Msg, self()});
+route_msg({control, Msg}, _) ->
+    hypar_node:control_msg(Msg).
+
+
+send(Socket, Msg) ->
+    lager:debug("CONNECT: SENDING ~p ON ~p", [Msg, Socket]),
+
+    Bin0 = erlang:term_to_binary(Msg),
+    Len = erlang:byte_size(Bin0),
+    Bin = <<Len:32/big-unsigned-integer, Bin0/binary>>,
+    ranch_tcp:send(Socket, Bin).
+
 %% @doc Open up a new connection
 %% @todo Looks like ranch is also gonna export connect later on,
 %%       change from gen_tcp to ranch_tcp
-new_connection({RemoteIP, RemotePort}, _, Monitor) ->
-    ConnectArgs = [{active, false}],
+new_connection({RemoteIP, RemotePort}, {LocalIP, _}, Monitor) ->
+    ConnectArgs = [{ip, LocalIP}, {active, false}, {keepalive, true}, binary],
     case gen_tcp:connect(RemoteIP, RemotePort, ConnectArgs, ?TIMEOUT) of
-        {ok, Socket} -> 
-            io:format("Connected..."),
+        {ok, Socket} ->
             {ok, Pid} = supervisor:start_child(connect_sup, []),
             ok = socket_ok(Pid, Socket),
             case Monitor of
@@ -172,7 +203,7 @@ socket_ok(Pid, Socket) ->
     gen_tcp:controlling_process(Socket, Pid),
     Ref = make_ref(),
     MRef = erlang:monitor(process, Pid),
-    Pid ! {socket, Socket, {self(), Ref}},
+    Pid ! {socket, Socket, self(), Ref},
     receive
         {ok, Ref} ->
             erlang:demonitor(MRef, [flush]),

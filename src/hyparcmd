@@ -1,9 +1,67 @@
 #!/usr/bin/escript
 %% -*- erlang -*-
-%%! -name cmd@localhost -cookie hypar
+%%! -sname cmd -setcookie hypar
 
+-export([connect_all/1]).
+
+
+%% Start a cluster running over a port range inclusive of node test
+%% They are connected with each other using 
+main(["start-cluster", FromStr, ToStr]) ->
+    From = erlang:list_to_integer(FromStr),
+    To = erlang:list_to_integer(ToStr),
+
+    %% Construct the node-names
+    Nodes = [ "node"++erlang:integer_to_list(Port) || Port <- lists:seq(From,To)],
+
+    %% Start all nodes
+    lists:foreach(fun(Node) ->
+                          os:cmd("erl -detached -setcookie hypar -sname "++Node)
+                  end,  Nodes),
+
+    %% Create the full node name
+    NodeAtoms = lists:map(fun erlang:list_to_atom/1, lists:map(fun(Node) -> Node++"@localhost" end, Nodes)),
+
+    %% Let nodes spin up before connecting them
+    timer:sleep(1000),
+
+    %% Connect to all nodes
+    lists:foreach(fun net_kernel:connect/1, NodeAtoms),
+
+    %% Let the nodes propagate cluster info
+    timer:sleep(1000),
+
+    case length(nodes()) =:= length(NodeAtoms) of
+        true ->
+            io:format("Cluster started!\n");
+        false ->
+            io:format("Could not connect all nodes, killing cluster\n"),
+            kill_cluster()
+    end;
+main(["start-cluster"|_]) ->
+    usage(start_cluster);
+main(["kill-cluster"]) ->
+    kill_cluster();
+main(["list-cluster"]) ->
+    io:format(os:cmd("pgrep -lf 'setcookie hypar -sname node'"));
+main(["attach", Node]) ->
+    os:cmd
 main(_) ->
         usage().
 
 usage() ->
-        io:format("usage: hyparcmd cmd options\n").
+    io:format("usage: hyparcmd cmd options\n").
+usage(start_cluster) ->
+    io:format("usage: hyparcmd start-cluster startport stopport\n"++
+                  "Command starts an erlang node on each port with name nodePORT@localhost\n"++
+                  "It also connects them to each other via traditional erlang distribution.\n");
+usage(list_cluster) ->
+    io:format("usage: hyparcmd list-cluster\n");
+usage(kill_cluster) ->
+    io:format("usage: hyparcmd kill-cluster\n").
+
+kill_cluster() ->
+    os:cmd("pkill -f 'setcookie hypar -sname node'").
+
+connect_all(Nodes) ->
+    lists:foreach(fun(Node) -> net_kernel:connect_node(Node) end, Nodes).
