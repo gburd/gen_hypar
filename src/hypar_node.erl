@@ -118,11 +118,12 @@ init(Options) ->
                                    ranch_tcp, ListenOpts,
                                    connect, [Recipient]),
     
-    %% Initate the shuffle cycle, random start time in
-    %% range from now to the period max.
+    %% Initate the shuffle cycle if shuffle_period is defined
+    %% Otherwise skip it, might be good in a test setting
     ShufflePeriod = proplists:get_value(shuffle_period, Options),
-    TimeOut = random:uniform(ShufflePeriod),
-    erlang:send_after(TimeOut, self(), shuffle_time),
+    if ShufflePeriod =/= undefined ->
+            erlang:send_after(ShufflePeriod, self(), shuffle_time)
+    end,
 
     %% Construct state
     Notify = proplists:get_value(notify, Options),

@@ -41,8 +41,6 @@
                   data,
                   recipient}).
 
--define(ERR(Error, Text), io:format("Error: ~p~nMessage: ~s~n", [Error, Text])).
-
 %%%===================================================================
 %%% API
 %%%===================================================================
@@ -135,11 +133,11 @@ loop(ConnSt) ->
                     ranch_tcp:setopts(Socket, [{active, once}]),
                     loop(ConnSt#conn_st{data = Rest});
                 {Closed, _Socket} ->
-                    %% Log this?
+                    lager:info("CONNECT: TCP-CONNECTION CLOSED"),
                     exit(normal);
                 {Error, Socket, Reason} ->
-                    ?ERR({tcp_error, Socket, Reason},
-                         "Error with a tcp-connection."),
+                    lager:error("CONNECT: TCP-CONNECTION FAILED with ~p",
+                                [{error, Reason}]),
                     exit(Reason)
             end
     end.
