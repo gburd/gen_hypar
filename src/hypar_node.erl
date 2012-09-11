@@ -118,12 +118,8 @@ init(Options) ->
                                    ranch_tcp, ListenOpts,
                                    connect, [Recipient]),
     
-    %% Initate the shuffle cycle if shuffle_period is defined
-    %% Otherwise skip it, might be good in a test setting
-    ShufflePeriod = proplists:get_value(shuffle_period, Options),
-    if ShufflePeriod =/= undefined ->
-            erlang:send_after(ShufflePeriod, self(), shuffle_time)
-    end,
+    %% Start shuffle
+    start_shuffle_timer(Options),
 
     %% Construct state
     Notify = proplists:get_value(notify, Options),
@@ -479,7 +475,9 @@ clean_shuffle_history(State) ->
 %% @doc Start the shuffle timer
 start_shuffle_timer(Options) ->
     ShufflePeriod = proplists:get_value(shuffle_period, Options),
-    erlang:send_after(ShufflePeriod, self(), shuffle_time).
+    if ShufflePeriod =/= undefined ->
+       erlang:send_after(ShufflePeriod, self(), shuffle_time)
+    end.
 
 %% @doc Add a node to an active view, removing a node if necessary.
 %%      The new state is returned. If a node has to be dropped, then
