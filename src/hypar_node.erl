@@ -236,10 +236,10 @@ handle_cast({{disconnect, Sender}, SenderPid}, State0) ->
     #state{id=ThisNode, notify=Notify, active_view=Active0} = State0,
     {Sender, SenderPid, MRef} = lists:keyfind(Sender, 1, Active0),
     
-    %% Disconnect the peer, kill the connection and add node to passive view
+    %% Disconnect the peer, close the connection and add node to passive view
     Active = lists:keydelete(Sender, 1, Active0),
     erlang:demonitor(MRef, [flush]),
-    connect:kill(SenderPid),
+    connect:close(SenderPid),
     neighbour_down(Notify, ThisNode, Sender),
     State = add_node_passive(Sender, State0),
     {noreply, State#state{active_view=Active}};
@@ -304,7 +304,7 @@ handle_cast({{neighbour_decline, Sender}, SenderPid}, State0) ->
 
     {Sender, SenderPid, MRef} = lists:keyfind(Sender, 1, Pending0),
     erlang:demonitor(MRef, [flush]),
-    connect:kill(SenderPid),
+    connect:close(SenderPid),
 
     Pending = lists:keydelete(Sender, 1, Pending0),
     State = find_new_active(State0#state{pending=Pending}),
@@ -355,8 +355,8 @@ handle_cast({{shuffle_reply, ReplyList, Ref}, SenderPid}, State0) ->
 
     ShuffleHist0 = State0#state.shuffle_history,
 
-    %% Kill the temporary connection
-    connect:kill(SenderPid),
+    %% Close the temporary connection
+    connect:close(SenderPid),
 
     case lists:keyfind(Ref, 1, ShuffleHist0) of
         %% Clean up the shuffle history, add the reply list to passive view
@@ -469,7 +469,7 @@ code_change(_OldVsn, State, _Extra) ->
 terminate(_Reason, State) ->
     lists:foreach(fun({_Node, Pid, MRef}) ->
                           erlang:demonitor(MRef),
-                          connect:kill(Pid)
+                          connect:close(Pid)
                   end, State#state.active_view),
     ok.
 
