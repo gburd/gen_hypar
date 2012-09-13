@@ -146,15 +146,15 @@ handle_cast({join_cluster, ContactNode}, State0) ->
         %% Connection ok, send a join message to the contact node
         {ok, Pid, MRef} ->
             join(Pid, ThisNode),
-            State = add_node_active(ContactNode, Pid, MRef, State0),
-            {noreply, State};
-        
+            State = add_node_active(ContactNode, Pid, MRef, State0);
         %% Error when connecting
         Err ->
             lager:error("FAIL: JOIN CLUSTER via ~p WITH ~p",
                         [ContactNode, Err]),
-            {noreply, State0}
-    end;
+            State = State0
+    end,
+    done(),
+    {noreply, State};
 
 %% Add newly joined node to active view, propagate a forward join
 handle_cast({{join, NewNode}, SenderPid}, State0) ->
@@ -174,6 +174,7 @@ handle_cast({{join, NewNode}, SenderPid}, State0) ->
 
     lager:debug("PROPAGATING FORWARD-JOIN to ~p", [ForwardNodes]),
 
+    done(),
     {noreply, State};
 
 %% Respond to a forward_join, add to active or propagate and maybe add to
@@ -199,8 +200,8 @@ handle_cast({{forward_join, NewNode, TTL, Sender}, _}, State0) ->
                 %% Connection OK!
                 {ok, Pid, MRef} ->
                     State = add_node_active(NewNode, Pid, MRef, State1),
-                    forward_join_reply(Pid, ThisNode),
-                    {noreply, State};
+                    forward_join_reply(Pid, ThisNode);
+
                 %% Error in connection setup, log it and ignore the new node
                 %% NOTE: Maybe use this as an opportunity to fill out the active
                 %%       view abit if it's not active size and there are no
@@ -208,7 +209,7 @@ handle_cast({{forward_join, NewNode, TTL, Sender}, _}, State0) ->
                 Err ->
                     lager:error("FAIL: CONNECTION TO ~p WITH ~p",
                                 [NewNode, Err]),
-                    {noreply, State0}
+                    State = State0
             end;
        true ->            
             %% Propagate the forward join using a random walk
@@ -218,8 +219,11 @@ handle_cast({{forward_join, NewNode, TTL, Sender}, _}, State0) ->
             lager:debug("FORWARD-JOIN: PROPAGATING TO ~p", [Node]),
 
             forward_join(Pid, NewNode, TTL-1, ThisNode),
-            {noreply, State1}
-    end;
+            State = State1
+    end,
+
+    done(),
+    {noreply, State};
 
 %% Accept a connection from the join procedure
 handle_cast({{forward_join_reply, Sender}, SenderPid}, State0) ->
@@ -227,6 +231,8 @@ handle_cast({{forward_join_reply, Sender}, SenderPid}, State0) ->
 
     MRef = erlang:monitor(process, SenderPid),
     State = add_node_active(Sender, SenderPid, MRef, State0),
+
+    done(),
     {noreply, State};
 
 %% Disconnect an open active connection, add disconnecting node to passive view
@@ -242,6 +248,8 @@ handle_cast({{disconnect, Sender}, SenderPid}, State0) ->
     connect:close(SenderPid),
     neighbour_down(Notify, ThisNode, Sender),
     State = add_node_passive(Sender, State0),
+
+    done(),
     {noreply, State#state{active_view=Active}};
 
 %% Respond to a neighbour request, either accept or decline based on priority
@@ -261,8 +269,7 @@ handle_cast({{neighbour_request, Sender, Priority}, SenderPid}, State0) ->
 
             MRef = erlang:monitor(process, SenderPid),
             State = add_node_active(Sender, SenderPid, MRef, State0),
-            neighbour_accept(SenderPid, ThisNode),
-            {noreply, State};
+            neighbour_accept(SenderPid, ThisNode);
         %% Low priority request, only accept if we have space in the
         %% nodes active view
         low ->
@@ -273,17 +280,20 @@ handle_cast({{neighbour_request, Sender, Priority}, SenderPid}, State0) ->
                                 [Sender]),
                     MRef = erlang:monitor(process, SenderPid),
                     State = add_node_active(Sender, SenderPid, MRef, State0),
-                    neighbour_accept(SenderPid, ThisNode),
-                    {noreply, State};
-               %% Active view is full
-               true ->
+                    neighbour_accept(SenderPid, ThisNode);
+                
+                %% Active view is full
+                true ->
                     lager:debug("NEIGHBOUR-REQUEST: DECLINED LOW PRIORITY REQUEST from ~p",
                                 [Sender]),
-
+                    
                     neighbour_decline(SenderPid, ThisNode),
-                    {noreply, State0}
+                    State = State0
             end
-    end;
+    end,
+    
+    done(),
+    {noreply, State};
 
 %% A neighbour request has been accepted, add to active view
 handle_cast({{neighbour_accept, Sender}, SenderPid}, State0) ->
@@ -294,6 +304,8 @@ handle_cast({{neighbour_accept, Sender}, SenderPid}, State0) ->
     {Sender, SenderPid, MRef} = lists:keyfind(Sender, 1, Pending0),
     Pending = lists:keydelete(Sender, 1, Pending0),
     State = add_node_active(Sender, SenderPid, MRef, State0),
+
+    done(),
     {noreply, State#state{pending=Pending}};
 
 %% A neighbour request has been declined, find a new one
@@ -308,6 +320,8 @@ handle_cast({{neighbour_decline, Sender}, SenderPid}, State0) ->
 
     Pending = lists:keydelete(Sender, 1, Pending0),
     State = find_new_active(State0#state{pending=Pending}),
+
+    done(),
     {noreply, State};
 
 %% Respond to a shuffle request, either propagate it or accept it via a
@@ -325,10 +339,10 @@ handle_cast({{shuffle_request, XList, TTL, Sender, Ref}, _}, State0) ->
         true ->            
             Peers = lists:keydelete(Sender, 1, Active),
             {Node, Pid, _MRef} = misc:random_elem(Peers),
-
+            
             lager:debug("SHUFFLE-REQUEST: PROPAGATING ~p to ~p", [Ref, Node]),
             shuffle_request(Pid, XList, TTL-1, Sender, Ref),
-            {noreply, State0};
+            State = State0;
         %% Accept the shuffle request, add to passive view and reply
         false ->
             lager:debug("SHUFFLE-REQUEST: ACCEPTING ~p", [Ref]),
@@ -340,14 +354,17 @@ handle_cast({{shuffle_request, XList, TTL, Sender, Ref}, _}, State0) ->
                     ReplyLength = length(XList),
                     ReplyList = misc:take_n_random(ReplyLength, Passive),
                     shuffle_reply(Pid, ReplyList, Ref),
-                    State = add_exchange_list(State0, XList, ReplyList),
-                    {noreply, State};
+                    State = add_exchange_list(State0, XList, ReplyList);
                 Err ->
                     lager:error("FAIL: TEMPORARY CONNECTION from ~p to ~p WITH ~p",
                                 [ThisNode, Sender, Err]),
-                    {noreply, State0}
+                    State = State0
             end
-    end;
+    end,
+    
+    done(),
+    {noreply, State};
+
 %% Accept a shuffle reply, add the reply list into the passive view and
 %% close the temporary connection.
 handle_cast({{shuffle_reply, ReplyList, Ref}, SenderPid}, State0) ->
@@ -363,14 +380,17 @@ handle_cast({{shuffle_reply, ReplyList, Ref}, SenderPid}, State0) ->
         {Ref, ShuffleList, _Time} ->
             ShuffleHist = lists:keydelete(Ref, 1, ShuffleHist0),
             State1 = State0#state{shuffle_history=ShuffleHist},
-            State = add_exchange_list(State1, ReplyList, ShuffleList),
-            {noreply, State};
+            State = add_exchange_list(State1, ReplyList, ShuffleList);
+
         %% Stale data or something buggy
         false ->
             lager:warning("SHUFFLE-REPLY: STALE SHUFFLE ~p ~p",
                           [ReplyList, Ref]),
-            {noreply, State0}
-    end.
+            State = State0
+    end,
+    
+    done(),
+    {noreply, State}.
 
 %% Handle failing connections. This may be either active connections or
 %% open neighbour requests. If an active connection has failed, try
@@ -402,6 +422,8 @@ handle_info({'DOWN', MRef, process, Pid, Reason}, State0) ->
                         State0
                 end
         end,
+
+    done(),
     {noreply, State};
 
 %% Timer message for periodic shuffle. Send of a shuffle request to a random
@@ -417,6 +439,7 @@ handle_info(shuffle_time, State0=#state{active_view=[]}) ->
     %% Cleanup shuffle history
     State = clean_shuffle_history(State0),
     
+    done(),
     {noreply, State};
     
 handle_info(shuffle_time, State0) ->
@@ -438,6 +461,8 @@ handle_info(shuffle_time, State0) ->
     %% Cleanup shuffle history and add new shuffle
     State1 = clean_shuffle_history(State0),
     State = State1#state{shuffle_history=[New|State1#state.shuffle_history]},
+
+    done(),
     {noreply, State}.
 
 %% Debug
@@ -490,7 +515,9 @@ clean_shuffle_history(State) ->
 start_shuffle_timer(Options) ->
     ShufflePeriod = proplists:get_value(shuffle_period, Options),
     if ShufflePeriod =/= undefined ->
-       erlang:send_after(ShufflePeriod, self(), shuffle_time)
+            erlang:send_after(ShufflePeriod, self(), shuffle_time);
+       true ->
+            ok
     end.
 
 %% @doc Add a node to an active view, removing a node if necessary.
@@ -637,3 +664,8 @@ find_neighbour(Priority, Passive0, ThisNode, Tried) ->
 %%      the priority is high, otherwise low.
 get_priority([], []) -> high;
 get_priority(_, _)  -> low.
+
+
+%% @doc Send a done event to the quickcheck-tests
+done() ->
+    test ! done.
