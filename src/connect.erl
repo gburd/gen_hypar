@@ -167,7 +167,6 @@ route_msg({message, Msg}, Recipient) ->
 route_msg({control, Msg}, _) ->
     hypar_node:control_msg(Msg).
 
-
 send(Socket, Msg) ->
     lager:debug("CONNECT: SENDING ~p ON ~p", [Msg, Socket]),
 

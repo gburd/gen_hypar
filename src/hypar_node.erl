@@ -4,7 +4,8 @@
 
 %% Node api
 -export([start_link/1, control_msg/1, join_cluster/1, debug_state/0,
-         get_peers/0, get_passive_peers/0, get_all_peers/0]).
+         get_peers/0, get_passive_peers/0, get_all_peers/0, get_pending_peers/0,
+         initiate_shuffle/0]).
 
 
 %% gen_server callbacks
@@ -15,7 +16,7 @@
                 active_view = [],
                 passive_view = [],
                 shuffle_history = [],
-                nreqs = [],
+                pending = [],
                 opts,
                 notify
                }).
@@ -30,6 +31,10 @@ start_link(Options) ->
 join_cluster(ContactNode) ->
     gen_server:cast(?MODULE, {join_cluster, ContactNode}).
 
+%% @doc Force a shuffle request to be sent out
+initiate_shuffle() ->
+    ?MODULE ! shuffle_time.
+
 %% @doc Get all the current active peers
 get_peers() ->
     gen_server:call(?MODULE, get_peers).
@@ -37,6 +42,10 @@ get_peers() ->
 %% @doc Get all the current passive peers
 get_passive_peers() ->
     gen_server:call(?MODULE, get_passive_peers).
+
+%% @doc Get all current pending peers
+get_pending_peers() ->
+    gen_server:call(?MODULE, get_pending_peers).
 
 %% @doc Get all the current peers
 get_all_peers() ->
@@ -279,26 +288,26 @@ handle_cast({{neighbour_request, Sender, Priority}, SenderPid}, State0) ->
 %% A neighbour request has been accepted, add to active view
 handle_cast({{neighbour_accept, Sender}, SenderPid}, State0) ->
     lager:debug("RECEIVED: NEIGHBOUR-ACCEPT ~p", [Sender]),
-    NRequests0 = State0#state.nreqs,
+    Pending0 = State0#state.pending,
 
     %% Remove the request from the request history
-    {Sender, SenderPid, MRef} = lists:keyfind(Sender, 1, NRequests0),
-    NRequests = lists:keydelete(Sender, 1, NRequests0),
+    {Sender, SenderPid, MRef} = lists:keyfind(Sender, 1, Pending0),
+    Pending = lists:keydelete(Sender, 1, Pending0),
     State = add_node_active(Sender, SenderPid, MRef, State0),
-    {noreply, State#state{nreqs=NRequests}};
+    {noreply, State#state{pending=Pending}};
 
 %% A neighbour request has been declined, find a new one
 handle_cast({{neighbour_decline, Sender}, SenderPid}, State0) ->
     lager:debug("RECEIVED: NEIGHBOUR-DECLINE ~p", [Sender]),
 
-    NRequests0 = State0#state.nreqs,
+    Pending0 = State0#state.pending,
 
-    {Sender, SenderPid, MRef} = lists:keyfind(Sender, 1, NRequests0),
+    {Sender, SenderPid, MRef} = lists:keyfind(Sender, 1, Pending0),
     erlang:demonitor(MRef, [flush]),
     connect:kill(SenderPid),
 
-    NRequests = lists:keydelete(Sender, 1, NRequests0),
-    State = find_new_active(State0#state{nreqs=NRequests}),
+    Pending = lists:keydelete(Sender, 1, Pending0),
+    State = find_new_active(State0#state{pending=Pending}),
     {noreply, State};
 
 %% Respond to a shuffle request, either propagate it or accept it via a
@@ -306,20 +315,19 @@ handle_cast({{neighbour_decline, Sender}, SenderPid}, State0) ->
 %% it add the shuffle list into it's passive view and responds with with
 %% a shuffle reply(including parts of it's own passive view).
 handle_cast({{shuffle_request, XList, TTL, Sender, Ref}, _}, State0) ->
-    NextTTL = TTL - 1,
     lager:debug("RECEIVED: SHUFFLE-REQUEST ~p ~p ~p ~p",
-                [XList, NextTTL, Sender, Ref]),
+                [XList, TTL, Sender, Ref]),
 
     #state{id=ThisNode, active_view=Active, passive_view=Passive} = State0,
 
-    case NextTTL > 0 andalso length(Active) > 1 of
+    case TTL > 0 andalso length(Active) > 1 of
         %% Propagate the random walk
         true ->            
             Peers = lists:keydelete(Sender, 1, Active),
             {Node, Pid, _MRef} = misc:random_elem(Peers),
 
             lager:debug("SHUFFLE-REQUEST: PROPAGATING ~p to ~p", [Ref, Node]),
-            shuffle_request(Pid, XList, NextTTL, Sender, Ref),
+            shuffle_request(Pid, XList, TTL-1, Sender, Ref),
             {noreply, State0};
         %% Accept the shuffle request, add to passive view and reply
         false ->
@@ -371,7 +379,7 @@ handle_info({'DOWN', MRef, process, Pid, Reason}, State0) ->
     lager:error("LINK-DOWN: A LINK HAS GONE DOWN WITH ~p", [{error, Reason}]),
 
     #state{id=ThisNode, notify=Notify,
-           active_view=Active0, nreqs=NRequests0} = State0,
+           active_view=Active0, pending=Pending0} = State0,
     State = 
         case lists:keyfind(Pid, 2, Active0) of
             {Node, Pid, MRef} ->
@@ -381,14 +389,14 @@ handle_info({'DOWN', MRef, process, Pid, Reason}, State0) ->
                 
                 find_new_active(State0#state{active_view=Active});
             false ->
-                case lists:keyfind(Pid, 2, NRequests0) of
+                case lists:keyfind(Pid, 2, Pending0) of
                     {Node, Pid, Node} ->
-                        NRequests = lists:keydelete(Pid, 2, NRequests0),
+                        Pending = lists:keydelete(Pid, 2, Pending0),
                         
                         lager:error("LINK-DOWN: LINK TO POTENTIAL NEIGHBOUR ~p DOWN",
                                     [Node]),
                         
-                        find_new_active(State0#state{nreqs=NRequests});
+                        find_new_active(State0#state{pending=Pending});
                     false ->
                         lager:error("LINK-DOWN: TEMPORARY LINK DOWN"),
                         State0
@@ -423,7 +431,7 @@ handle_info(shuffle_time, State0) ->
     New = {Ref, XList, Now},
 
     lager:debug("SHUFFLE-TIME: SENDING SHUFFLE-REQUEST TO ~p", [Node]),
-    shuffle_request(Pid, XList, ARWL, ThisNode, Ref),
+    shuffle_request(Pid, XList, ARWL-1, ThisNode, Ref),
 
     start_shuffle_timer(Options),
 
@@ -444,10 +452,16 @@ handle_call(get_peers, _From, State) ->
 handle_call(get_passive_peers, _From, State) ->
     {reply, State#state.passive_view, State};
 
+%% Return all pending peers
+handle_call(get_pending_peers, _From, State) ->
+    {reply, State#state.pending, State};
+
 %% Return all peers
 handle_call(get_all_peers, _From, State) ->
-    #state{active_view=Active, passive_view=Passive} = State,
-    {reply, {Active, Passive}, State}.
+    #state{active_view=Active0, passive_view=Passive,
+           pending=Pending} = State,
+    Active = [{Node, Pid} || {Node, Pid, _} <- Active0],
+    {reply, {Active, Pending, Passive}, State}.
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -589,13 +603,13 @@ free_slots(I, List, [Remove|RemoveFirst]) ->
 %%      view until it finds a good one, send that node an asynchronous
 %%      neighbour request and logs the request in the state.
 find_new_active(State) ->
-    #state{id=ThisNode, nreqs=NReqs,
+    #state{id=ThisNode, pending=Pending,
            active_view=Active, passive_view=Passive0} = State,
-    Priority = get_priority(Active, NReqs),
+    Priority = get_priority(Active, Pending),
 
     case find_neighbour(Priority, Passive0, ThisNode) of
         {PossiblePeer, Passive} ->
-            State#state{passive_view=Passive, nreqs=[PossiblePeer|NReqs]};
+            State#state{passive_view=Passive, pending=[PossiblePeer|Pending]};
         false ->
             lager:error("NEIGHBOUR: NO PASSIVE ENTRIES VALID"),
             State#state{passive_view=[]}

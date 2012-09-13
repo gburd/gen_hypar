@@ -1,9 +1,8 @@
 -module(hyparerl).
 
--export([start/0, test_start/1, join_cluster/1,
+-export([start/0, test_start/1, join_cluster/1, initiate_shuffle/0,
          get_peers/0, get_passive_peers/0, get_all_peers/0,
-         get_peers/1, get_passive_peers/1, get_all_peers/1,
-         debug_state/0, debug_state/1]).
+         get_pending_peers/0, debug_state/0]).
 
 start() ->
     application:start(lager),
@@ -27,27 +26,20 @@ test_start(Port) ->
 join_cluster(ContactNode) ->
     hypar_node:join_cluster(ContactNode).
 
+initiate_shuffle() ->
+    hypar_node:initiate_shuffle().
+
 get_peers() ->
     hypar_node:get_peers().
 
-get_peers(Node) ->
-    rpc:call(Node, hypar_node, get_peers, []).
+get_pending_peers() ->
+    hypar_node:get_pending_peers().
 
 get_passive_peers() ->
     hypar_node:get_passive_peers().
 
-get_passive_peers(Node) ->
-    rpc:call(Node, hypar_node, get_passive_peers, []).
-
 get_all_peers() ->
     hypar_node:get_all_peers().
 
-get_all_peers(Node) ->
-    rpc:call(Node, hypar_node, get_all_peers, []).
-
 debug_state() ->
-    hypar_node:debug_state().
-
-debug_state(Node) ->
-    rpc:call(Node, hypar_node, debug_state, []).
-    
+    hypar_node:debug_state().    
