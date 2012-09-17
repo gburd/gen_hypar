@@ -30,7 +30,7 @@
 
 %% API
 -export([start_link/1, start_link/4, new_connection/2, new_temp_connection/2,
-         send_control/2, send_message/2, kill/1]).
+         send_control/2, send_message/2, close/1]).
 
 -export([init/1, init/3]).
 
@@ -74,9 +74,9 @@ send_message(Pid, Msg) ->
 send_control(Pid, Msg) ->
     Pid ! {control, Msg}.
 
-%% @doc Kill a tcp-handler
-kill(Pid) ->
-    Pid ! kill.
+%% @doc Close a tcp-handler
+close(Pid) ->
+    Pid ! close.
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -117,7 +117,7 @@ loop(ConnSt) ->
         {control, Msg} ->
             send(Socket, {control, Msg}),
             loop(ConnSt);
-        kill -> 
+        close -> 
             ranch_tcp:close(Socket),
             exit(normal);
         Info ->

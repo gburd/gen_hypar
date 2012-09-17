@@ -153,7 +153,6 @@ handle_cast({join_cluster, ContactNode}, State0) ->
                         [ContactNode, Err]),
             State = State0
     end,
-    done(),
     {noreply, State};
 
 %% Add newly joined node to active view, propagate a forward join
@@ -174,7 +173,6 @@ handle_cast({{join, NewNode}, SenderPid}, State0) ->
 
     lager:debug("PROPAGATING FORWARD-JOIN to ~p", [ForwardNodes]),
 
-    done(),
     {noreply, State};
 
 %% Respond to a forward_join, add to active or propagate and maybe add to
@@ -222,7 +220,6 @@ handle_cast({{forward_join, NewNode, TTL, Sender}, _}, State0) ->
             State = State1
     end,
 
-    done(),
     {noreply, State};
 
 %% Accept a connection from the join procedure
@@ -232,7 +229,6 @@ handle_cast({{forward_join_reply, Sender}, SenderPid}, State0) ->
     MRef = erlang:monitor(process, SenderPid),
     State = add_node_active(Sender, SenderPid, MRef, State0),
 
-    done(),
     {noreply, State};
 
 %% Disconnect an open active connection, add disconnecting node to passive view
@@ -249,7 +245,6 @@ handle_cast({{disconnect, Sender}, SenderPid}, State0) ->
     neighbour_down(Notify, ThisNode, Sender),
     State = add_node_passive(Sender, State0),
 
-    done(),
     {noreply, State#state{active_view=Active}};
 
 %% Respond to a neighbour request, either accept or decline based on priority
@@ -291,8 +286,7 @@ handle_cast({{neighbour_request, Sender, Priority}, SenderPid}, State0) ->
                     State = State0
             end
     end,
-    
-    done(),
+
     {noreply, State};
 
 %% A neighbour request has been accepted, add to active view
@@ -305,7 +299,6 @@ handle_cast({{neighbour_accept, Sender}, SenderPid}, State0) ->
     Pending = lists:keydelete(Sender, 1, Pending0),
     State = add_node_active(Sender, SenderPid, MRef, State0),
 
-    done(),
     {noreply, State#state{pending=Pending}};
 
 %% A neighbour request has been declined, find a new one
@@ -321,7 +314,6 @@ handle_cast({{neighbour_decline, Sender}, SenderPid}, State0) ->
     Pending = lists:keydelete(Sender, 1, Pending0),
     State = find_new_active(State0#state{pending=Pending}),
 
-    done(),
     {noreply, State};
 
 %% Respond to a shuffle request, either propagate it or accept it via a
@@ -362,7 +354,6 @@ handle_cast({{shuffle_request, XList, TTL, Sender, Ref}, _}, State0) ->
             end
     end,
     
-    done(),
     {noreply, State};
 
 %% Accept a shuffle reply, add the reply list into the passive view and
@@ -389,7 +380,6 @@ handle_cast({{shuffle_reply, ReplyList, Ref}, SenderPid}, State0) ->
             State = State0
     end,
     
-    done(),
     {noreply, State}.
 
 %% Handle failing connections. This may be either active connections or
@@ -423,7 +413,6 @@ handle_info({'DOWN', MRef, process, Pid, Reason}, State0) ->
                 end
         end,
 
-    done(),
     {noreply, State};
 
 %% Timer message for periodic shuffle. Send of a shuffle request to a random
@@ -439,7 +428,6 @@ handle_info(shuffle_time, State0=#state{active_view=[]}) ->
     %% Cleanup shuffle history
     State = clean_shuffle_history(State0),
     
-    done(),
     {noreply, State};
     
 handle_info(shuffle_time, State0) ->
@@ -462,7 +450,6 @@ handle_info(shuffle_time, State0) ->
     State1 = clean_shuffle_history(State0),
     State = State1#state{shuffle_history=[New|State1#state.shuffle_history]},
 
-    done(),
     {noreply, State}.
 
 %% Debug
@@ -479,7 +466,8 @@ handle_call(get_passive_peers, _From, State) ->
 
 %% Return all pending peers
 handle_call(get_pending_peers, _From, State) ->
-    {reply, State#state.pending, State};
+    Pending = [Node || {Node, _Pid, _MRef} <- State#state.pending],
+    {reply, Pending, State};
 
 %% Return all peers
 handle_call(get_all_peers, _From, State) ->
@@ -664,8 +652,3 @@ find_neighbour(Priority, Passive0, ThisNode, Tried) ->
 %%      the priority is high, otherwise low.
 get_priority([], []) -> high;
 get_priority(_, _)  -> low.
-
-
-%% @doc Send a done event to the quickcheck-tests
-done() ->
-    test ! done.
