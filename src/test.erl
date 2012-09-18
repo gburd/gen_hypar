@@ -4,8 +4,6 @@
 
 -behaviour(gen_server).
 
--define(SERVER, ?MODULE). 
-
 -record(st, {active=[],
              passive=[],
              pending=[],
@@ -16,10 +14,13 @@
 %%% API
 %%%===================================================================
 start_link() ->
-    gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
+    gen_server:start_link({local, test}, ?MODULE, [], []).
 
-get_messages() ->
-    gen_server:call(test, get_messages).
+messages() ->
+    gen_server:call(test, messages).
+
+empty_messages() ->
+    gen_server:call(test, empty_messages).
 
 add_node(Node) ->
     gen_server:cast(test, {add_node, Node}).
@@ -28,10 +29,22 @@ remove_node(Node) ->
     gen_server:cast(test, {remove_node, Node}).
 
 send(_Pid,Msg) ->
-    gen_server:cast(?SERVER, Msg).
+    gen_server:cast(test, Msg).
 
 active_view() ->
-    gen_server:call(?SERVER, active_view).
+    gen_server:call(test, active_view).
+
+passive_view() ->
+    gen_server:call(test, passive_view).
+
+add_pending(Node) ->
+    gen_server:cast(test, {add_pending, Node}).
+
+remove_pending(Node) ->
+    gen_server:cast(test, {remove_pending, Node}).
+
+pending() ->
+    gen_server:call(test, pending).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -39,22 +52,25 @@ active_view() ->
 init([]) ->
     {ok, #st{}}.
 
-handle_call(get_messages, _From, S) ->
-    {reply, S#st.messages, S#st{messages=[]}};
+handle_call(messages, _From, S) ->
+    {reply, S#st.messages, S};
+handle_call(empty_messages, _From, S) ->
+    {reply, ok, S#st{messages=[]}};
 handle_call(active_view, _From, S) ->
     {reply, S#st.active, S};
 handle_call(passive_view, _From, S) ->
-    {reply, S#st.passive, S}.
+    {reply, S#st.passive, S};
+handle_call(pending, _From, S) ->
+    {reply, S#st.pending, S}.
 
 handle_cast({add_node, Node}, S) ->
     {noreply, S#st{active=[Node|S#st.active]}};
 handle_cast({remove_node, Node}, S) ->
     {noreply, S#st{active=lists:delete(Node, S#st.active)}};
-handle_cast({disconnect, Node}, S) ->
-    {noreply, S#st{active=lists:delete(Node, S#st.active),
-                   passive=[Node|S#st.passive]}};
-handle_cast({neighbour_request, S, P}, S) ->
-    {noreply, S#st{pending=[{S,P}|S#st.pending]}};
+handle_cast({add_pending, Node}, S) ->
+    {noreply, S#st{pending=[Node|S#st.pending]}};
+handle_cast({remove_pending, Node}, S) ->
+    {noreply, S#st{pending=lists:delete(Node, S#st.pending)}};
 handle_cast(Msg, S) ->
     {noreply, S#st{messages=[Msg|S#st.messages]}}.
 

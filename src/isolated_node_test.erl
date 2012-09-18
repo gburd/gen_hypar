@@ -59,34 +59,33 @@ initial_state({Opts, NodeIDs}) ->
 
 command(S) ->
     Cmds =
-        [[{1, {call, ?MODULE, join_cluster, [elements(S#st.nodes)]}},
-          {1, {call, ?MODULE, join, [elements(S#st.nodes)]}}] ++
-             [{1, {call, dummy_node, kill, [elements(S#st.active)]}} || S#st.active =/= []]],
-
+        [[{1, {call, ?MODULE, join_cluster, [elements(S#st.nodes)]}}]],
+    
     frequency(lists:flatten(Cmds)).
 
 precondition(_S,{call,_,_,_}) ->
     true.
 
+%% After a join_cluster we expect the contact node to be in the active view,
+%% if the active view was full, then we expect a disconnect to be sent
 postcondition(S, {call, ?MODULE, join_cluster, [Node]}, _) ->
-    lists:member(Node, S#st.active) andalso
-        [{join, Node}] =:= test:get_messages() andalso
-        lists:usort(S#st.active) =:= lists:usort(hyparerl:get_peers());
-postcondition(S,{call, ?MODULE, join, [Node]}, _) ->
-    FJoins = lists:usort(fun({_,_,_,N1},{_,_,_,N2}) -> N1 =< N2 end,test:get_messages()),
-    lists:member(Node, S#st.active) andalso
-        length(FJoins) =:= length(S#st.active)
-    
-    lists:member(Node, S#st.active),
+    Active = hyparerl:get_peers(),
+    Disconnect = [N || {disconnect, N} <- test:messages()],
+    Join = [N || {join, N} <- test:messages()],
+    Join =:= [{join, Node}] andalso
+        lists:member(Node, Active) andalso
+        case length(S#st.active) =:= S#st.active_size of
+            true ->
+                length(Disconnect) =:= 1 andalso
+                    lists:member(Disconnect, S#st.active);
+            false ->
+                Disconnect =:= []
+        end.
 
 next_state(S,_, {call, ?MODULE, join_cluster, [Node]}) ->
     test:add_node(Node),
-    S#st{active=test:active_view()};
-next_state(S, _, {call, ?MODULE, join, [Node]}) ->
-    test:add_node(Node),
-    S#st{active=test:active_view()};
-next_state(S, _, {call, ?MODULE, kill, [Node]}) ->
-    test:remove_node(Node),
+    [test:remove_node(D) || {disconnect, D} <- test:messages()],
+    test:empty_messages(),
     S#st{active=test:active_view()}.
 
 %% @doc Let the hypar_node join cluster via Node
@@ -129,13 +128,39 @@ shuffle_request(XList, TTL, Sender, Ref) ->
 shuffle_reply(Sender, ExchangeList, Ref) ->
     send(Sender, {shuffle_reply, ExchangeList, Ref}).
 
+%% Helpers
+
+is_disconnect({disconnect,_}) -> true;
+is_disconnect(_) -> false.
+
+is_join({join,_}) -> true;
+is_join(_) -> false.
+
+is_forward_join({forward_join,_,_,_}) -> true;
+is_forward_join(_) -> false.
+
+is_forward_join_reply({forward_join_reply,_}) -> true;
+is_forward_join_reply(_) -> false.
+
+is_neighbour_request({neighbour_request,_,_}) -> true;
+is_neighbour_request(_) -> false.
+
+is_neighbour_accept({neighbour_accept,_}) -> true;
+is_neighbour_accept(_) -> false.
+
+is_neighbour_decline({neighbour_decline,_}) -> true;
+is_neighbour_decline(_) -> false.
+
+is_shuffle_request({shuffle_request,_,_,_,_}) -> true;
+is_shuffle_request(_) -> false.
+
+is_shuffle_reply({shuffle_reply, _, _}) -> true;
+is_shuffle_reply(_) -> false.
+
 %% Setup & Clean-up
-
 setup(Options) ->
-
-    {ok,_} = hypar_node:start_link(Options),    
-
-    setup_meck().
+    setup_meck(),
+    {ok,_} = hypar_node:start_link(Options).
 
 cleanup() ->
     Pid = erlang:whereis(hypar_node),
