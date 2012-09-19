@@ -12,7 +12,8 @@ start_link(Node) ->
 
 
 start_dummy_node(Node) ->
-    supervisor:start_child(dummy_sup, [Node]).
+    {ok, Pid} = supervisor:start_child(dummy_sup, [Node]),
+    Pid.
 
 kill(Node) ->
     Node ! kill.

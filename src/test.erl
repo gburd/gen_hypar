@@ -16,6 +16,9 @@
 start_link() ->
     gen_server:start_link({local, test}, ?MODULE, [], []).
 
+reset() ->
+    gen_server:call(test, reset).
+
 messages() ->
     gen_server:call(test, messages).
 
@@ -28,8 +31,8 @@ add_node(Node) ->
 remove_node(Node) ->
     gen_server:cast(test, {remove_node, Node}).
 
-send(_Pid,Msg) ->
-    gen_server:cast(test, Msg).
+send(Pid,Msg) ->
+    gen_server:cast(test, {Msg, Pid}).
 
 active_view() ->
     gen_server:call(test, active_view).
@@ -52,6 +55,8 @@ pending() ->
 init([]) ->
     {ok, #st{}}.
 
+handle_call(reset, _From, _) ->
+    {reply, ok, #st{}};
 handle_call(messages, _From, S) ->
     {reply, S#st.messages, S};
 handle_call(empty_messages, _From, S) ->
@@ -63,18 +68,18 @@ handle_call(passive_view, _From, S) ->
 handle_call(pending, _From, S) ->
     {reply, S#st.pending, S}.
 
-handle_cast({add_node, Node}, S) ->
-    {noreply, S#st{active=[Node|S#st.active]}};
-handle_cast({remove_node, Node}, S) ->
-    {noreply, S#st{active=lists:delete(Node, S#st.active)}};
-handle_cast({add_pending, Node}, S) ->
-    {noreply, S#st{pending=[Node|S#st.pending]}};
+handle_cast({add_node, NodePid}, S) ->
+    {noreply, S#st{active=lists:usort([NodePid|S#st.active])}};
+handle_cast({remove_node, Pid}, S) ->
+    {noreply, S#st{active=lists:keydelete(Pid, 2, S#st.active)}};
+handle_cast({add_pending, NodePid}, S) ->
+    {noreply, S#st{pending=[NodePid|S#st.pending]}};
 handle_cast({remove_pending, Node}, S) ->
-    {noreply, S#st{pending=lists:delete(Node, S#st.pending)}};
+    {noreply, S#st{pending=lists:keydelete(Node, 1, S#st.pending)}};
 handle_cast(Msg, S) ->
     {noreply, S#st{messages=[Msg|S#st.messages]}}.
 
-handle_info(_Info, State) ->
+handle_info(_, State) ->
     {stop, not_used, State}.
 
 terminate(_Reason, _State) ->

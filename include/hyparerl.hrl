@@ -1,7 +1,4 @@
 %% -------------------------------------------------------------------
-%%
-%% Header file for the hyparerl application
-%%
 %% Copyright (c) 2012 Emil Falk  All Rights Reserved.
 %%
 %% This file is provided to you under the Apache License,
@@ -19,6 +16,25 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
+%%% @author Emil Falk <emil.falk.1988@gmail.com>
+%%% @copyright (C) 2012, Emil Falk
+%%% @title Include file
+%%% @doc Defines records & types used in hyparerl
+%%%-------------------------------------------------------------------
 
--define(TIMEOUT, 10000).
--define(TEMP_PORT, 5999).
+%% @doc Represent the priority of a neighbour request
+-type priority() :: high | low.
+
+%% @doc Represent changes in the state of the <b>hypar_node</b>
+-type view_change() ::
+        {no_change | id(),       %% Changes to the active view
+         no_change | list(id()), %% Changes to the passive view
+         no_change | id()}.      %% Changes to the pending view
+%% @doc An <em>identifier</em> is a tuple of an IP address and port number
+-type id() :: {inet:ip_address(),
+               inet:port_number()}.
+
+%% @doc A <em>peer</em> consists of an identifier and a corresponding pid
+-record(peer, {id  :: id(),
+               pid :: pid()
+              }).
