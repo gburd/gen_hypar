@@ -22,17 +22,21 @@
 %%% @doc Defines records & types used in hyparerl
 %%%-------------------------------------------------------------------
 
-%% @doc Represent the priority of a neighbour request
--type priority() :: high | low.
-
-%% @doc Represent changes in the state of the <b>hypar_node</b>
--type view_change() ::
-        {no_change | id(),       %% Changes to the active view
-         no_change | list(id()), %% Changes to the passive view
-         no_change | id()}.      %% Changes to the pending view
 %% @doc An <em>identifier</em> is a tuple of an IP address and port number
 -type id() :: {inet:ip_address(),
                inet:port_number()}.
+
+%% @doc Type for shuffle history entries
+-type shuffle_ent() :: {reference(), list(id()), erlang:timestamp()}.
+
+%% @doc Represent the priority of a neighbour request
+-type priority() :: high | low.
+
+%% @doc Type for change in the view
+-type view_change() :: {no_disconnect | id(), no_drop | id()}.
+
+%% @doc A view is just a list of identifiers
+-type view() :: list(id()).
 
 %% @doc A <em>peer</em> consists of an identifier and a corresponding pid
 -record(peer, {id  :: id(),
