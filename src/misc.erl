@@ -21,7 +21,7 @@
 %% -------------------------------------------------------------------
 
 %% @doc Utility functions and/or functions that doesn't fit anywhere else.
-
+%%      Mostly random functions
 -module(misc).
 
 -author('Emil Falk <emil.falk.1988@gmail.com>').
@@ -34,76 +34,71 @@
 %%% API
 %%%===================================================================
 
--spec drop_return(N :: pos_integer(), List :: list(T)) -> list(T).
+-spec drop_return(N :: pos_integer(), List :: list(T)) -> {T,list(T)}.
 %% @pure
-%% @doc Drops the N'th element of the List returning both the dropped element
-%%      and the resulting list.
+%% @doc Drops the <em>N'th</em> element of <em>List</em> returning both
+%%      the dropped element and the resulting list.
 drop_return(N, List) ->
     drop_return(N, List, []).
 
 -spec drop_nth(N :: pos_integer(), List :: list(T)) -> list(T).
 %% @pure
-%% @doc Drop the n'th element of a list
+%% @doc Drop the <em>N'th</em> element of <em>List</em>.
 drop_nth(N, List0) ->
     {_, List} = drop_return(N, List0),
     List.
 
 -spec random_elem(List :: list(T)) -> T.
-%% @doc Get a random element of a list
+%% @doc Get a random element of <em>List</em>.
 random_elem(List) ->
     I = random:uniform(length(List)),
     lists:nth(I, List).
 
 -spec take_n_random(N :: non_neg_integer(), List :: list(T)) -> list(T).
-%% @doc Take N random elements from the list
+%% @doc Take <em>N</em> random elements from <em>List</em>.
 take_n_random(N, List) -> 
     take_n_random(N, List, length(List)).
 
 -spec drop_random(List :: list(T)) -> {T, list(T)}.
-%% @doc Removes a random element from the list, returning
-%%      a new list and the dropped element.
+%% @doc Removes a random element from <em>List, returning
+%%      the new list and the dropped element.
 drop_random(List) ->
     N = random:uniform(length(List)),
     drop_return(N, List).
 
 -spec drop_n_random(N :: pos_integer(), List :: list(T)) -> list(T).
 %% @doc Removes n random elements from the list
-drop_n_random(N, List) ->
-    drop_n_random(List, N, length(List), []).
+drop_n_random(N, List) when N >= 0-> drop_n_random(List, N, length(List));
+drop_n_random(N, List) -> List.
+
 
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
 
--spec take_n_random(N :: non_neg_integer(), List :: list(T),
-                    Length :: non_neg_integer()) -> list(T).
+-spec take_n_random(N :: non_neg_integer(), L :: list(T),
+                    Len :: non_neg_integer()) -> list(T).
 %% @doc Helper function for take_n_random/2.
-take_n_random(0, _List, _Length) ->
-    [];
-take_n_random(_N, _, 0) ->
-    [];
-take_n_random(N, List, Length) ->
-    I = random:uniform(Length),
-    {Elem, NewList} = drop_return(I, List),
-    [Elem|take_n_random(N-1, NewList, Length-1)].
+take_n_random(0, _, _) -> [];
+take_n_random(_, _, 0) -> [];
+take_n_random(N, L, Len) ->
+    I = random:uniform(Len),
+    {E, L1} = drop_return(I, L),
+    [E|take_n_random(N-1, L1, Len)].
 
--spec drop_return(N :: pos_integer(), List :: list(T), Skipped :: list(T)) ->
-                         {T, list(T)}.
+-spec drop_return(N :: pos_integer(), L :: list(T), S :: list(T))
+                 -> {T, list(T)}.
 %% @pure
 %% @doc Helper function for drop_return/2
-drop_return(1, [H|T], Skipped) ->
-    {H, lists:reverse(Skipped) ++ T};
-drop_return(N, [H|T], Skipped) ->
-    drop_return(N-1, T, [H|Skipped]).
+drop_return(1, [H|T], S) -> {H, lists:reverse(S) ++ T};
+drop_return(N, [H|T], S) -> drop_return(N-1, T, [H|S]).
 
--spec drop_n_random(List :: list(T), N :: non_neg_integer(),
-                    Length :: non_neg_integer(), list(T)) -> {list(T), list(T)}.
+-spec drop_n_random(L :: list(T), N :: non_neg_integer(),
+                    Len :: non_neg_integer()) -> list(T).
 %% @doc Helper-function for drop_n_random/2
-drop_n_random(List, 0, _Length, Drop) ->
-    {List, Drop};
-drop_n_random(_List, _N, 0, Drop) ->
-    {[], Drop};
-drop_n_random(List, N, Length, Drop) ->
-    I = random:uniform(Length),
-    {X, L} = drop_return(I, List),
-    drop_n_random(L, N-1, Length-1, [X|Drop]).
+drop_n_random(L, 0, _) -> L;
+drop_n_random(_, _, 0) -> [];
+drop_n_random(L, N, Len) ->
+    I = random:uniform(Len),
+    {X, L} = drop_return(I, L),
+    drop_n_random(L, N-1, Len-1).

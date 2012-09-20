@@ -20,7 +20,15 @@
 
 prepare() ->
     application:load(hyparerl),
-    application:meck(start).
+    application:start(meck),
+    lager:start().
+
+
+test() ->
+    prepare(),
+    mock_connect(),
+    catch eqc:quickcheck(prop_hypar_node()),
+    unmock_connect().
 
 mock_connect() ->
     meck:new(connect),
@@ -39,22 +47,23 @@ unmock_connect() ->
 prop_hypar_node() ->
     Options0 = application:get_all_env(hyparerl),
     Options = proplists:delete(shuffle_period, Options0),
-    
-    ?FORALL(Cmds, commands(?MODULE, initial_state(Options)),
-            begin
-                mock_connect(),
-                {ok, _} = collector:start_link(),
-                
-                {ok, _} = hypar_node:start_link(Options),
-                {H, S, Res} = run_commands(?MODULE, Cmds),                
 
-                ok = hypar_node:stop(),
-                ok = collector:stop(),
-                unmock_connect(),
-                ?WHENFAIL(
-                   io:format("Hist: ~p\nState: ~p\n Res: ~p\n", [H, S, Res]),
-                   Res == ok
-                  )end).
+       ?FORALL(Cmds, commands(?MODULE, initial_state(Options)),
+               begin                   
+                   {ok, _} = collector:start_link(),
+                   
+                   {ok, _} = hypar_node:start_link(Options),
+                   {H, S, Res} = run_commands(?MODULE, Cmds),                
+                   
+                   ok = hypar_node:stop(),
+                   ok = collector:stop(),
+                   unmock_connect(),
+                   ?WHENFAIL(
+                      io:format("Hist: ~p\nState: ~p\n Res: ~p\n", [H, S, Res]),
+                      Res == ok
+                     )
+               end
+              ).
 
 initial_state(Opts) ->
     ARWL = proplists:get_value(arwl, Opts),
@@ -70,17 +79,25 @@ initial_state(Opts) ->
 next_state(S, Peer, {call, ?MODULE, create_peer, []}) ->
     S#st{peers=[Peer|S#st.peers]};
 next_state(S, Disc, {call, ?MODULE, join_cluster, [Peer]}) ->
-    S#st{active=lists:usort([Peer#peer.id|lists:delete(Disc, S#st.active)])}.
+    S#st{active=lists:usort([Peer|lists:delete(Disc, S#st.active)])}.
 
 command(S) ->
-    oneof([{call, ?MODULE, create_peer, []},
-           {call, hypar_node, join_cluster, [elements(S#st.peers)]}
-          ]).
+    oneof([{call, ?MODULE, create_peer, []}] ++
+              [{call, ?MODULE, join_cluster, [elements(S#st.peers -- S#st.active)]} || (S#st.peers -- S#st.active) =/= []]).
 
 precondition(_S, _C) ->
     true.
 
-postcondition(_S, _C, _R) ->
+postcondition(S, {call, ?MODULE, join_cluster, [Peer]}, Disc) ->
+    Peers = hypar_node:get_peers(),
+    lists:member(Peer#peer.id, Peers) andalso
+        case length(S#st.active) =:= S#st.active_size of
+            false ->
+                Disc =:= no_disconnect;
+            true ->
+                not lists:member(Disc, Peers)
+        end;
+postcondition(_S,_C,_R) ->
     true.
 
 invariant(S) ->

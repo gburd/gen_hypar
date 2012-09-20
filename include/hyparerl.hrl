@@ -32,8 +32,8 @@
 %% @doc Represent the priority of a neighbour request
 -type priority() :: high | low.
 
-%% @doc Type for change in the active view
--type view_change() :: no_disconnect | id().
+%% @doc Represent the options
+-type options() :: list(proplists:property()).
 
 %% @doc A view is just a list of identifiers
 -type view() :: list(id()).
