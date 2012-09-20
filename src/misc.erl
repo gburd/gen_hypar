@@ -97,7 +97,7 @@ drop_return(N, [H|T], Skipped) ->
     drop_return(N-1, T, [H|Skipped]).
 
 -spec drop_n_random(List :: list(T), N :: non_neg_integer(),
-                    Length :: non_neg_integer()) -> list(T).                            
+                    Length :: non_neg_integer(), list(T)) -> {list(T), list(T)}.
 %% @doc Helper-function for drop_n_random/2
 drop_n_random(List, 0, _Length, Drop) ->
     {List, Drop};

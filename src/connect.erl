@@ -1,211 +1,180 @@
-%% -------------------------------------------------------------------
-%%
-%% Connection handler for hyparerl 
-%%
-%% Copyright (c) 2012 Emil Falk  All Rights Reserved.
-%%
-%% This file is provided to you under the Apache License,
-%% Version 2.0 (the "License"); you may not use this file
-%% except in compliance with the License.  You may obtain
-%% a copy of the License at
-%%
-%%   http://www.apache.org/licenses/LICENSE-2.0
-%%
-%% Unless required by applicable law or agreed to in writing,
-%% software distributed under the License is distributed on an
-%% "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-%% KIND, either express or implied.  See the License for the
-%% specific language governing permissions and limitations
-%% under the License.
-%%
-%% -------------------------------------------------------------------
-
-%% @doc Module that implements the tcp-connection handling between two
-%%      nodes in hyparerl. Either listens to a socket for connections
-%%      or provided with an existing open socket to handle.
+%% @doc A connection layer on top of TCP for the use in hyparerl
+%% @todo Should make this a gen_fsm
 
 -module(connect).
 
--author('Emil Falk <emil.falk.1988@gmail.com>').
+-behaviour(gen_server).
 
 %% API
--export([start_link/1, start_link/4, new_connection/2, new_temp_connection/2,
-         send_control/2, send_message/2, close/1]).
+-export([start_link/3, start_link/4]).
 
--export([init/1, init/3]).
+-export([initialize/1, stop/0, send/2, new_active/2, new_pending/2, new_temp/2]).
+
+%% gen_server callbacks
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2,
+         terminate/2, code_change/3]).
 
 -include("hyparerl.hrl").
 
-%% Local state
--record(conn_st, {socket,
-                  data,
-                  recipient}).
+-record(conn, {state=temp,
+               id,
+               lpeer,
+               sock,
+               data}).
 
 %%%===================================================================
 %%% API
 %%%===================================================================
 
-%% @doc Start a tcp-handler that accepts connections from a listen-socket
-start_link(ListenerPid, Socket, _Transport, [Recipient]) ->
-    Args = [ListenerPid, Socket, Recipient],
-    Pid = spawn_link(?MODULE, init, Args),
-    {ok, Pid}.
+start_link(ListenerPid, Socket, _Transport, [LID]) ->
+    gen_server:start_link(?MODULE, [incoming, ListenerPid, LID, Socket], []).
 
-%% @doc Start a tcp-connection
-start_link(Recipient) ->
-    Pid = spawn_link(?MODULE, init, [Recipient]),
-    {ok, Pid}.
+start_link(Socket, RID, State) ->
+    gen_server:start_link(?MODULE, [outgoing, Socket, RID, State], []).
 
-%% @doc Start a new connection, returning a pid and a monitor if
-%% successful otherwise it returns an error.
-new_connection(NodeA, NodeB) ->
-    new_connection(NodeA, NodeB, true).
+initialize(LID) ->
+    {IP, Port} = LID,
+    ListenOpts = [{port,Port},{ip,IP},{keepalive, true}],
+    {ok, _} = ranch:start_listener(tcp_conn, 100,
+                                   ranch_tcp, ListenOpts,
+                                   connect, [LID]).
 
-%% @doc Same as above but won't monitor the connection since it's only temporary.
-new_temp_connection(NodeA, NodeB) ->
-    new_connection(NodeA, NodeB, false).
+stop() ->
+    ranch:stop_listener(tcp_conn).
 
-%% @doc Send a message to a peer, this will be routed to the configured
-%%      recipient process. (For example the plumtree service)
-send_message(Pid, Msg) ->
-    Pid ! {message, Msg}.
+new_active(From, To) ->
+    new_connection(From, To, active).
 
-%% @doc Send a control message (i.e node -> node)
-send_control(Pid, Msg) ->
-    Pid ! {control, Msg}.
+new_pending(From, To) ->
+    new_connection(From, To, pending).
 
-%% @doc Close a tcp-handler
-close(Pid) ->
-    Pid ! close.
+new_temp(From, To) ->
+    new_connection(From, To, temp).
+
+send(Peer, Msg) ->
+    gen_server:call(Peer#peer.pid, Msg).
 
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
 
-%% Either initiate a connection via a listen socket(ranch) or existing socket
-init(ListenerPid, Socket, Recipient) ->
-    ok = ranch:accept_ack(ListenerPid),
+init([incoming, ListenerPid, LID, Socket]) ->
+    ok = ranch:accept_ack(ListenerPid),    
     ranch_tcp:setopts(Socket, [{active, once}]),
-    
-    ConnSt = #conn_st{socket=Socket,
-                      data = <<>>,
-                      recipient=Recipient},
-    lager:debug("CONNECT: INCOMING CONNECTION ACCEPTED"),
-    
-    loop(ConnSt).
+    {ok, #conn{state = temp,
+               lpeer = #peer{id=LID,
+                             pid=hypar_node},
+               sock = Socket,
+               data = <<>>}};
+init([outgoing, Socket, LID, RID, State]) ->
+    {ok, #conn{state  = State,
+               id     = RID,
+               lpeer  = #peer{id=LID,
+                             pid=hypar_node},
+               sock   = Socket,
+               data   = <<>>}, 0}.
 
-init(Recipient) ->
-    ConnSt = #conn_st{data= <<>>,
-                      recipient=Recipient},
-    pre_loop(ConnSt).
+handle_call({disconnect, _},_ ,C=#conn{state=active}) ->
+    ranch_tcp:close(C#conn.sock),
+    {stop, normal, C};
+handle_call({neighbour_accept, _}=Msg, _, C=#conn{state=pending}) ->
+    Reply = ranch_tcp:send(C#conn.sock, encode(Msg)),
+    {reply, Reply, C#conn{state=active}};
+handle_call({forward_join_reply, _}=Msg, _, C=#conn{state=temp}) ->
+    Reply = ranch_tcp:send(C#conn.sock, encode(Msg)),
+    {reply, Reply, C#conn{state=active}};
+handle_call(Msg, _, C) ->
+    Reply = ranch_tcp:send(C#conn.sock, encode(Msg)),
+    {reply, Reply, C}.
 
-pre_loop(ConnSt) ->
-    receive
-        {socket, Socket, Pid, Ref} ->
-            Pid ! {ok, Ref},
-            ranch_tcp:setopts(Socket, [{active, once}]),
-            lager:debug("CONNECT: OUTGOING CONNECTION ESTABLISHED"),
-            loop(ConnSt#conn_st{socket=Socket})
+handle_cast(_, C) ->
+    {stop, not_used, C}.
+
+handle_info({tcp, _, Bin}, C=#conn{data=RemBin0}) ->
+    {Packets, RemBin} = decode(<<RemBin0/binary, Bin/binary>>),
+    handle_packets(Packets, C#conn{data=RemBin});
+
+handle_info({tcp_closed, _}, C) ->
+    case C#conn.state of
+        active  -> hypar_node:disconnect(C#conn.lpeer, C#conn.id);
+        pending -> hypar_node:error(C#conn.id, pending_disconnected);
+        _ -> ok                  
+    end, 
+    {stop, normal, C};
+handle_info({tcp_error, _, Reason}, C) ->
+    case C#conn.state of
+        active  -> hypar_node:error(C#conn.id, Reason);
+        pending -> hypar_node:error(C#conn.id, Reason);
+        temp -> ok
+    end,
+    {stop, normal, C};
+handle_info(timeout, C=#conn{sock=Socket}) ->
+    receive 
+        {ok, Socket} -> {noreply, C}
     end.
 
-loop(ConnSt) ->
-    #conn_st{socket=Socket, recipient=Recipient, data=OldData} = ConnSt,
-    receive
-        {message, Msg} ->
-            send(Socket, {message,Msg}),
-            loop(ConnSt);
-        {control, Msg} ->
-            send(Socket, {control, Msg}),
-            loop(ConnSt);
-        close -> 
-            ranch_tcp:close(Socket),
-            exit(normal);
-        Info ->
-            {OK, Closed, Error} = ranch_tcp:messages(),
-            case Info of
-                {OK, Socket, Data} ->
-                    {Msgs, Rest} = decode(OldData, Data),
-                    lager:debug("CONNECT: ROUTING MESSAGES ~p, LEFT OVER BINARY ~p",
-                                [Msgs, Rest]),
-                    F = fun(M) -> route_msg(M, Recipient) end,
-                    lists:foreach(F, Msgs),
+terminate(_, _) ->
+    ok.
 
-                    ranch_tcp:setopts(Socket, [{active, once}]),
-                    loop(ConnSt#conn_st{data = Rest});
-                {Closed, _Socket} ->
-                    lager:info("CONNECT: TCP-CONNECTION CLOSED"),
-                    exit(normal);
-                {Error, Socket, Reason} ->
-                    lager:error("CONNECT: TCP-CONNECTION FAILED with ~p",
-                                [{error, Reason}]),
-                    exit(Reason)
-            end
-    end.
+code_change(_, C, _) ->
+    {ok, C}.
 
 %%%===================================================================
 %%% Internal functions
-%%%===================================================================    
+%%%===================================================================
 
-decode(OldBin, Bin) ->
-    NewBin = <<OldBin/binary, Bin/binary>>,
-    {Bins, Rest} = packets(NewBin, []),
-    {lists:map(fun erlang:binary_to_term/1, Bins), Rest}.
+handle_packets([], C) ->
+    C;
+handle_packets([P|Ps], C0) ->
+    C = handle_packet(P, C0),
+    handle_packets(Ps, C).
 
-packets(<<Len:32/big-unsigned-integer, Bin/binary>>=All, Packets) ->
-    case erlang:byte_size(Bin) < Len of
+handle_packet({neighbour_request, RID, _}=Msg, C=#conn{state=temp}) ->
+    route_msg(Msg),
+    C#conn{id=RID, state=pending};
+handle_packet({neighbour_accept, _}=Msg, C=#conn{state=pending})->
+    route_msg(Msg),
+    C#conn{state=active};
+handle_packet({forward_join_reply, RID}=Msg, C=#conn{state=temp})->
+    route_msg(Msg),
+    C#conn{id=RID, state=active};
+handle_packet({join, _}=Msg, C=#conn{state=temp}) ->
+    route_msg(Msg),
+    C#conn{state=active};
+handle_packet(Msg, C) ->
+    route_msg(Msg),
+    C.
+
+route_msg(Msg) ->
+    gen_server:call(hypar_node, Msg).
+
+encode(Msg) ->
+    Bin = erlang:term_to_binary(Msg),
+    Len = erlang:byte_size(Bin),
+    <<Len:32/big-unsigned-integer, Bin>>.
+
+decode(Bin) ->
+    {Chunks, RemBin} = packets(Bin, []),
+    {lists:map(fun erlang:binary_to_term/1, Chunks), RemBin}.
+
+packets(<<Len:32/big-unsigned-integer, Chunk/binary>>=Bin, Packets) ->
+    case erlang:byte_size(Chunk) < Len of
         true ->
-            {Packets, All};
+            {Packets, Bin};
         false ->
-            <<Packet:Len/binary, Rest/binary>> = Bin,
-            packets(Rest, [Packet|Packets])
+            <<Packet:Len/binary, RemBin/binary>> = Chunk,
+            packets(RemBin, [Packet|Packets])
     end;
 packets(Bin, Packets) ->
     {Packets, Bin}.
 
-route_msg({message, Msg}, Recipient) ->
-    gen_server:cast(Recipient, {Msg, self()});
-route_msg({control, Msg}, _) ->
-    hypar_node:control_msg(Msg).
-
-send(Socket, Msg) ->
-    lager:debug("CONNECT: SENDING ~p ON ~p", [Msg, Socket]),
-
-    Bin0 = erlang:term_to_binary(Msg),
-    Len = erlang:byte_size(Bin0),
-    Bin = <<Len:32/big-unsigned-integer, Bin0/binary>>,
-    ranch_tcp:send(Socket, Bin).
-
-%% @doc Open up a new connection
-%% @todo Looks like ranch is also gonna export connect later on,
-%%       change from gen_tcp to ranch_tcp
-new_connection({RemoteIP, RemotePort}, {LocalIP, _}, Monitor) ->
-    ConnectArgs = [{ip, LocalIP}, {active, false}, {keepalive, true}, binary],
-    case gen_tcp:connect(RemoteIP, RemotePort, ConnectArgs, ?TIMEOUT) of
+new_connection({LIP,_}, RID={RIP, RPort}, State) ->
+    Args = [{ip, LIP}, {keepalive, true}],
+    case ranch_tcp:connect(RIP, RPort, Args) of
         {ok, Socket} ->
-            {ok, Pid} = supervisor:start_child(connect_sup, []),
-            ok = socket_ok(Pid, Socket),
-            case Monitor of
-                true ->
-                    MRef = erlang:monitor(process, Pid),            
-                    {ok, Pid, MRef};
-                false ->
-                    {ok, Pid}
-            end;
+            {ok, Pid} = ?MODULE:start_link(Socket, RID, State),
+            Pid ! {ok, Socket},
+            #peer{id=RID, pid=Pid};
         Err ->
             Err
-    end.
-
-%% @doc Let pid start using socket
-socket_ok(Pid, Socket) ->
-    gen_tcp:controlling_process(Socket, Pid),
-    Ref = make_ref(),
-    MRef = erlang:monitor(process, Pid),
-    Pid ! {socket, Socket, self(), Ref},
-    receive
-        {ok, Ref} ->
-            erlang:demonitor(MRef, [flush]),
-            ok;
-        {'DOWN', MRef, process, _, _} ->
-            erlang:demonitor(MRef, [flush]),
-            ok
     end.
