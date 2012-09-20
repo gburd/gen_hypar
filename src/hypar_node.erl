@@ -44,7 +44,7 @@
 %% Events
 -export([join/2, forward_join/4, forward_join_reply/2,
          neighbour_request/3, neighbour_accept/2, neighbour_decline/2,
-         shuffle_request/6, shuffle_reply/3]).
+         shuffle_request/6, shuffle_reply/3, error/2]).
 
 %% Send related
 -export([]).
@@ -58,11 +58,11 @@
 %%%%%%%%%%%
 
 -record(st, {id                :: id(),           %% This nodes identifier
-             activev = []      :: list(#peer{}),  %% The active view
-             passivev = []     :: list(id()),     %% The passive view
+             activev           :: list(#peer{}),  %% The active view
+             passivev          :: list(id()),     %% The passive view
              pendingv = []     :: list(#peer{}),  %% The pending view (current neighbour requests)
-             shuffle_hist = []  :: list(#shuffle_ent{}), %% History of shuffle requests sent
-             opts              :: list(proplists:property()), %% Options
+             shuffle_hist = [] :: list(shuffle_ent()), %% History of shuffle requests sent
+             opts = []         :: list(proplists:property()), %% Options
              notify            :: pid() | atom(), %% Notify process with link_up/link_down
              rec               :: pid() | atom()  %% Process that receives messages
             }).
@@ -359,7 +359,7 @@ handle_call({forward_join, Sender, NewNode, TTL}, _, S0) ->
             P = misc:random_elem(AllButSender),
             
             ok = forward_join(P, S1#st.id, NewNode, TTL-1),
-            {reply, {no_disconnect,PassiveChange}, S1}
+            {reply, {no_disconnect,PassiveDrop}, S1}
     end;
 
 %% Accept a connection from the join procedure
@@ -419,14 +419,9 @@ handle_call({neighbour_accept, Sender},_ , S0) ->
 handle_call({neighbour_decline, Sender}, _, S0) ->
     %% Remove the request
     P = lists:keyfind(Sender, #peer.id, S0#st.pendingv),
-    PendingV = lists:keydelete(Sender, #peer.id, S0#st.pendingv),
-    case find_new_active(S0#st{pendingv=PendingV}) of
-        {no_peers, S} ->
-            lager:error("No valid peers to connect to."),
-            {reply, {error, no_peers}, S};
-        {Change, S} ->
-            {reply, Change, S}
-    end;
+    PendingV = lists:keydelete(P#peer.id, #peer.id, S0#st.pendingv),
+    {Change, S} = find_new_active(S0#st{pendingv=PendingV}),
+    {reply, Change, S};
 
 %% Respond to a shuffle request, either propagate it or accept it via a
 %% temporary connection to the source of the request. If the node accept then
@@ -452,7 +447,7 @@ handle_call({shuffle_request, Sender, Requester, XList, TTL, Ref}, _, S0) ->
                     {reply, {error, Err}, S0};
                 P ->
                     ok = shuffle_reply(P, ReplyXList, Ref),
-                    {PassiveDrops, S} = add_exchange_list(XList, ReplyXList, S0),
+                    {PassiveDrops, S} = add_xlist(XList, ReplyXList, S0),
                     {reply, PassiveDrops, S}
             end
     end;
@@ -464,7 +459,7 @@ handle_call({shuffle_reply, ReplyXList, Ref}, _, S0) ->
         %% Clean up the shuffle history, add the reply list to passive view
         {Ref, XList, _} ->
             ShuffleHist = lists:keydelete(Ref, 1, S0#st.shuffle_hist),
-            {PassiveDrops, S} = add_exchange_list(ReplyXList, XList, S0),
+            {PassiveDrops, S} = add_xlist(ReplyXList, XList, S0),
             {reply, PassiveDrops, S#st{shuffle_hist=ShuffleHist}};
         %% Stale data or something buggy
         false ->
@@ -493,13 +488,8 @@ handle_call({error, Sender, Reason}, _, S0) ->
                 S0#st{activev=ActiveV}
         end,
     
-    case find_new_active(S1) of
-        {no_peers, S} ->
-            lager:error("No valid peers to connect to."),
-            {reply, {error, no_peers}, S};
-        {Change, S} ->
-            {reply, Change, S}
-    end;
+    {Change, S} = find_new_active(S1),
+    {reply, Change, S};
 
 %% Return current active peers
 handle_call(get_peers, _, S) ->
@@ -537,7 +527,7 @@ handle_info(shuffle_time, S0) ->
             true ->
                 S0#st.shuffle_hist;
             false ->
-                XList = create_xlist(S0#st.id, S0#st.activev, S0#st.passivev),
+                XList = create_xlist(S0),
                 P = misc:random_elem(S0#st.activev),
                 
                 ARWL = proplists:get_value(arwl, S0#st.opts),
@@ -551,7 +541,7 @@ handle_info(shuffle_time, S0) ->
     start_shuffle_timer(S0#st.opts),
 
     %% Cleanup shuffle history and add new shuffle
-    S = clean_shuffle_history(S0#st{shuffle_hist=ShuffleHist}),
+    S = clear_shuffle_history(S0#st{shuffle_hist=ShuffleHist}),
     {noreply, S}.
 
 handle_cast(_,S) ->
@@ -577,15 +567,15 @@ clear_shuffle_history(S) ->
 
     case length(S#st.shuffle_hist) >= ShuffleBuffer of
         true ->
-            ShuffleHist = drop_oldest(S#st.shuffle_hist, ShuffleBuffer),
+            ShuffleHist = drop_oldest(S#st.shuffle_hist),
             S#st{shuffle_hist=ShuffleHist};
         false ->
             S
     end.
 
--spec drop_oldest(List :: list(shuffle_ent()), N :: non_neg_integer()) ->
-                         list(shuffle_ent()).
-drop_oldest(
+-spec drop_oldest(List :: list(shuffle_ent())) -> list(shuffle_ent()).
+drop_oldest(ShuffleHist) ->
+    tl(lists:usort(fun({_,_,T1}, {_,_,T2}) -> T1 < T2 end, ShuffleHist)).
 
 -spec start_shuffle_timer(Opts :: list(proplists:property())) -> ok.           
 %% @private
@@ -627,14 +617,14 @@ add_node_passive(Node, S) ->
         true -> 
             PassiveSize = proplists:get_value(passive_size, S#st.opts),
             N = length(S#st.passivev),
-            if N >= PassiveSize ->
-                    {Dropped, Passive} = misc:drop_random(Passive0, N-PassiveSize+1);
-               true ->
-                    Passive
+            {PassiveDrop, PassiveV} = 
+                case N >= PassiveSize of
+                    true ->  misc:drop_random(S#st.passivev, N-PassiveSize+1);
+                    false -> {[], S#st.passivev}
             end,
-            State#state{passive_view=Passive};
-       true ->
-            State
+            {PassiveDrop, S#st{passivev=[Node|PassiveV]}};
+        false ->
+            {[], S#st.passivev}
     end.
 
 %% @private
@@ -645,75 +635,84 @@ add_node_passive(Node, S) ->
 %%       be violated. I opt to just use add_node_passive since I don't
 %%       think it matter. Should be noted though, might be that it does
 %%       matter.
-drop_random_active(S0) ->
-    {Peer, ActiveV} = misc:drop_random(S0#st.activev),
-    {PassiveChange, S} = add_node_passive(Peer#peer.id, S0#st{activev=ActiveV}),
+drop_random_active(S) ->
+    PassiveSize = proplists:get_value(passive_size, S#st.opts),
+    PassiveV = S#st.passivev,
+    PassiveL = length(PassiveV),
+    {Peer, ActiveV} = misc:drop_random(S#st.activev),
+    {PassiveV, PassiveDrop} = 
+        case PassiveL >= PassiveSize of
+            true  -> free_slots(PassiveL-PassiveSize+1, PassiveV);
+            false -> {S#st.passivev, []}
+        end,
     disconnect(Peer, S#st.id),
     neighbour_down(S#st.notify, Peer#peer.id),
-    {{Peer#peer.id, PassiveChange, no_change}, S}.
+    {{Peer#peer.id, PassiveDrop}, S#st{activev=ActiveV,
+                                       passivev=[Peer#peer.id|PassiveV]}}.
 
 %% @doc Create the exchange list used in a shuffle.
-create_exchange_list(State) ->
-    #state{active_view=Active, passive_view=Passive,
-           id=ThisNode, opts=Options} = State,
-    KActive  = proplists:get_value(k_active, Options),
-    KPassive = proplists:get_value(k_passive, Options),
+create_xlist(S) ->
+    KActive = proplists:get_value(k_active, S#st.opts),
+    KPassive = proplists:get_value(k_passive, S#st.opts),
 
-    ActiveIDs = lists:map(fun({X,_,_}) -> X end, Active),
-
-    RandomActive  = misc:take_n_random(KActive, ActiveIDs),
-    RandomPassive = misc:take_n_random(KPassive, Passive),
-    [ThisNode | (RandomActive ++ RandomPassive)].
+    ActiveV = lists:map(fun(P) -> P#peer.id end, S#st.activev),
+    
+    RandomActive  = misc:take_n_random(KActive, ActiveV),
+    RandomPassive = misc:take_n_random(KPassive, S#st.passivev),
+    [S#st.id | (RandomActive ++ RandomPassive)].
 
 %% @doc Takes the exchange-list and adds it into the state. Removes nodes
 %%      that are already in active/passive view from the list. If the passive
 %%      view are full, start by dropping elements from ReplyList then random
 %%      elements.
-add_exchange_list(State, ExchangeList0, ReplyList) ->
-    #state{active_view=Active, passive_view=Passive0,
-           id=ThisNode, opts=Options} = State,
-    PassiveSize = proplists:get_value(passive_size, Options),
+add_xlist(S, XList0, ReplyL) ->
+    PassiveSize = proplists:get_value(passive_size, S#st.opts),
+    
+    Filter = fun(Node) ->
+                     Node =/= S#st.id andalso
+                         not lists:keymember(Node, #peer.id, S#st.activev) andalso
+                         not lists:member(Node, S#st.passivev)
+             end,
+    XList = lists:filter(Filter, XList0),
+    N = length(S#st.passivev) - PassiveSize + length(XList),
 
-    FilterFun = fun(Node) ->
-                        Node =/= ThisNode andalso
-                            not lists:keymember(Node, 1, Active) andalso
-                            not lists:member(Node, Passive0)
-                end,
-    ExchangeList = lists:filter(FilterFun, ExchangeList0),
+    {PassiveDrops, PassiveV} = free_slots(N, S#st.passivev, ReplyL, []),
 
-    SlotsNeeded = length(ExchangeList) - PassiveSize + length(Passive0),
-    Passive = free_slots(SlotsNeeded, Passive0, ReplyList),
+    {PassiveDrops, S#st{passivev=XList ++ PassiveV}}.
 
-    State#state{passive_view=ExchangeList ++ Passive}.
+free_slots(N, List) ->
+    free_slots(N, List, [], []).
 
 %% @doc Free up slots in the List, start by removing elements
-%%      from the RemoveFirst, then remove at random.
-free_slots(I, List, _RemoveFirst) when I =< 0 ->
-    List;
-free_slots(I, List, []) ->
-    misc:drop_n_random(I, List);
-free_slots(I, List, [Remove|RemoveFirst]) ->
+%%      from the RemoveFirst, then remove at random. Return the
+%%      removed elements aswell as the new list.
+free_slots(I, List, _RemoveFirst, Dropped) when I =< 0 ->
+    {List, Dropped};
+free_slots(I, List, [], Dropped) ->
+    {L, Drop} = misc:drop_n_random(I, List),
+    {L, Drop ++ Dropped};
+free_slots(I, List, [Remove|RemoveFirst], Drop) ->
     case lists:member(Remove, List) of
-        true  -> free_slots(I-1, lists:delete(Remove, List), RemoveFirst);
-        false -> free_slots(I, List, RemoveFirst)
+        true  -> free_slots(I-1, lists:delete(Remove, List), RemoveFirst, [Remove|Drop]);
+        false -> free_slots(I, List, RemoveFirst, Drop)
     end.
 
 %% @doc When a node is thought to have died this function is called.
 %%      It will recursively try to find a new neighbour from the passive
 %%      view until it finds a good one, send that node an asynchronous
 %%      neighbour request and logs the request in the state.
-find_new_active(State) ->
-    #state{id=ThisNode, pending=Pending,
-           active_view=Active, passive_view=Passive0} = State,
-    Priority = get_priority(Active, Pending),
+find_new_active(S) ->
+    Priority = get_priority(S#st.activev ++ S#st.pendingv),
 
-    case find_neighbour(Priority, Passive0, ThisNode) of
-        {PossiblePeer, Passive} ->
-            State#state{passive_view=Passive, pending=[PossiblePeer|Pending]};
+    case find_neighbour(Priority, S#st.passivev, S#st.id) of
+        {Peer, PassiveDrops, PassiveV} ->
+            lager:info("Found potential neighbour ~p.", [Peer]),
+            {{Peer, PassiveDrops}, S#st{passivev=PassiveV,
+                                        pendingv=[Peer|S#st.pendingv]}};
         false ->
-            lager:error("NEIGHBOUR: NO PASSIVE ENTRIES VALID"),
-            State#state{passive_view=[]}
-    end.        
+            lager:error("Could not find any peers to connect to in passive view."),
+            {{no_peer, S#st.passivev}, S#st{passivev=[]}}
+    end.
 
 find_neighbour(Priority, Passive, ThisNode) ->
     find_neighbour(Priority, Passive, ThisNode, []).
@@ -735,8 +734,8 @@ find_neighbour(Priority, Passive0, ThisNode, Tried) ->
 %% @pure
 %% @doc Find the priority of a new neighbour. If no active entries exist
 %%      the priority is high, otherwise low.
-get_priority([], []) -> high;
-get_priority(_, _)  -> low.
+get_priority([]) -> high;
+get_priority(_)  -> low.
 
 no_change() ->
     {no_change, no_change, no_change}.

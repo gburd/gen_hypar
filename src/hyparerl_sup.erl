@@ -19,7 +19,6 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
-
 -module(hyparerl_sup).
 
 -author('Emil Falk <emil.falk.1988@gmail.com>').
@@ -46,12 +45,7 @@ start_link(Options) ->
 %% ===================================================================
 
 init([Options]) ->
-    Recipient = proplists:get_value(recipient, Options),
-
     Node = {hypar_node,
             {hypar_node, start_link, [Options]},
             permanent, 5000, worker, [hypar_man]},
-    ConnectionSup = {connect_sup,
-                     {connect_sup, start_link, [Recipient]},
-                     permanent, 5000, supervisor, [connect_sup]},
-    {ok, { {one_for_all, 5, 10}, [Node, ConnectionSup]}}.
+    {ok, { {one_for_all, 5, 10}, [Node]}}.

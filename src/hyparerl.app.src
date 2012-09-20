@@ -10,7 +10,6 @@
                  ]},
   {mod, { hyparerl_app, []}},
   {env, [{id, {{127,0,0,1}, 6000}},
-         {temp_port, 5999},             
          {active_size, 5},
          {passive_size, 30},
          {arwl, 6},
@@ -21,6 +20,6 @@
          {shuffle_buffer, 5},
          {contact_node, none},
          {notify, none},
-         {recipient, none}
+         {receiver, none}
         ]}
  ]}.

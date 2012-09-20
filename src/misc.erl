@@ -69,7 +69,7 @@ drop_random(List) ->
 -spec drop_n_random(N :: pos_integer(), List :: list(T)) -> list(T).
 %% @doc Removes n random elements from the list
 drop_n_random(N, List) ->
-    drop_n_random(List, N, length(List)).
+    drop_n_random(List, N, length(List), []).
 
 %%%===================================================================
 %%% Internal functions
@@ -99,10 +99,11 @@ drop_return(N, [H|T], Skipped) ->
 -spec drop_n_random(List :: list(T), N :: non_neg_integer(),
                     Length :: non_neg_integer()) -> list(T).                            
 %% @doc Helper-function for drop_n_random/2
-drop_n_random(List, 0, _Length) ->
-    List;
-drop_n_random(_List, _N, 0) ->
-    [];
-drop_n_random(List, N, Length) ->
+drop_n_random(List, 0, _Length, Drop) ->
+    {List, Drop};
+drop_n_random(_List, _N, 0, Drop) ->
+    {[], Drop};
+drop_n_random(List, N, Length, Drop) ->
     I = random:uniform(Length),
-    drop_n_random(drop_nth(I, List), N-1, Length-1).
+    {X, L} = drop_return(I, List),
+    drop_n_random(L, N-1, Length-1, [X|Drop]).

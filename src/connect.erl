@@ -84,7 +84,7 @@ close(Pid) ->
 
 %% Either initiate a connection via a listen socket(ranch) or existing socket
 init(ListenerPid, Socket, Recipient) ->
-    ok = ranch:accept_ack(ListenerPid),    
+    ok = ranch:accept_ack(ListenerPid),
     ranch_tcp:setopts(Socket, [{active, once}]),
     
     ConnSt = #conn_st{socket=Socket,
