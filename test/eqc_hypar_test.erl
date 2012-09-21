@@ -6,11 +6,11 @@
 
 -include("hyparerl.hrl").
 
--compile([export_all]).
+-compile([export_all, debug_info]).
 
 -record(st, {active = [],
              pending = [],
-             peers = [],
+             nodes = [],
              arwl = 6,
              prwl = 3,
              active_size = 5,
@@ -20,8 +20,7 @@
 
 prepare() ->
     application:load(hyparerl),
-    application:start(meck),
-    lager:start().
+    application:start(meck).
 
 
 test() ->
@@ -76,15 +75,17 @@ initial_state(Opts) ->
     #st{arwl=ARWL,prwl=PRWL,active_size=ActiveSize,passive_size=PassiveSize,
         k_active=KActive, k_passive=KPassive}.
 
-next_state(S, Peer, {call, ?MODULE, create_peer, []}) ->
+next_state(S, Peer, {call, ?MODULE, create_node, []}) ->
     S#st{peers=[Peer|S#st.peers]};
-next_state(S, Disc, {call, ?MODULE, join_cluster, [Peer]}) ->
+next_state(S, Disc, {call, ?MODULE, join, []}) ->
     S#st{active=lists:usort([Peer|lists:delete(Disc, S#st.active)])}.
 
+command(S#st{nodes=[]}) -> {call, ?MODULE, unique_node, []};
 command(S) ->
-    oneof([{call, ?MODULE, create_peer, []}] ++
-              [{call, ?MODULE, join_cluster, [elements(S#st.peers -- S#st.active)]} || (S#st.peers -- S#st.active) =/= []]).
-
+    oneof([
+           {call, hypar_node, join, [elements(S#st.nodes)},
+           {call, hypar_node, forward_join, [elements(S#st.activev),
+                                             elements(S#st.nodes)]}]
 precondition(_S, _C) ->
     true.
 
@@ -104,7 +105,7 @@ invariant(S) ->
     lists:usort(hypar_node:get_peers()) =:= lists:usort(S#st.active).
 
 create_peer() ->
-    #peer{id=make_ref(), pid=collector}.
+    #peer{id=make_ref(), pid=self()}.
 
 join_cluster(Peer) ->
     hypar_node:join_cluster(Peer#peer.id).

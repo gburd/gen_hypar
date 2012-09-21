@@ -308,7 +308,7 @@ handle_call({join_cluster, ContactNode}, _, S0) ->
             {reply, {error, already_in_active_view}, S0}
     end;
 
-%% Add newly joined node to active view, propagate a forward join
+%% Add newly joined node to active view, propagate forward joins
 handle_call({join, Sender}, {Pid,_}, S0) ->
     S = add_node_active(#peer{id=Sender, pid=Pid}, S0),
 
@@ -335,7 +335,7 @@ handle_call({disconnect, Sender}, _, S0) ->
     neighbour_down(S0#st.notify, Sender),
     {reply, ok, add_node_passive(Sender, S0#st{activev=ActiveV})};
 
-%% Respond to a request, either accept or decline based on priority and current
+%% Neighbour request, either accept or decline based on priority and current
 %% active view
 handle_call({neighbour, Sender, Priority},{Pid,_} , S) ->
     P = #peer{id=Sender, pid=Pid},
@@ -358,9 +358,7 @@ handle_call({neighbour, Sender, Priority},{Pid,_} , S) ->
             end
     end;
 
-%% Handle failing connections. This may be either active connections or
-%% open neighbour requests. If a connection has failed, try
-%% and find a new one.
+%% Handle failing connections. Try to find a new one if possible
 handle_call({error, Sender, Reason}, _, S0) ->
     lager:error("Active link to ~p failed with error ~p.~n", [Sender, Reason]),
     neighbour_down(S0#st.notify, Sender),
