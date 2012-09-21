@@ -40,5 +40,5 @@
 
 %% @doc A <em>peer</em> consists of an identifier and a corresponding pid
 -record(peer, {id  :: id(),
-               pid :: pid()
+               pid :: atom() | pid()
               }).

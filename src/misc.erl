@@ -68,8 +68,8 @@ drop_random(List) ->
 
 -spec drop_n_random(N :: pos_integer(), List :: list(T)) -> list(T).
 %% @doc Removes n random elements from the list
-drop_n_random(N, List) when N >= 0-> drop_n_random(List, N, length(List));
-drop_n_random(N, List) -> List.
+drop_n_random(N, List) when N >= 0 -> drop_n_random(List, N, length(List));
+drop_n_random(_, List) -> List.
 
 
 %%%===================================================================
@@ -100,5 +100,5 @@ drop_n_random(L, 0, _) -> L;
 drop_n_random(_, _, 0) -> [];
 drop_n_random(L, N, Len) ->
     I = random:uniform(Len),
-    {X, L} = drop_return(I, L),
+    {_, L} = drop_return(I, L),
     drop_n_random(L, N-1, Len-1).

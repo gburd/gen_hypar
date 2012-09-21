@@ -57,12 +57,12 @@
 %% State %%
 %%%%%%%%%%%
 
--record(st, {id            :: id(),           %% This nodes identifier
-             activev = []  :: list(#peer{}),  %% The active view
-             passivev = [] :: list(id()),     %% The passive view
+-record(st, {id = {{127,0,0,1},6000} :: id(),      %% This nodes identifier
+             activev = []  :: list(#peer{}),       %% The active view
+             passivev = [] :: list(id()),          %% The passive view
              shist = []    :: list(shuffle_ent()), %% History of shuffle requests sent
-             opts = []     :: options(),      %% Options
-             notify        :: pid() | atom()  %% Notify process with link_up/link_down
+             opts          :: options(),           %% Options
+             notify        :: pid() | atom()       %% Notify process with link_up/link_down
             }).
 
 %%%%%%%%%
@@ -258,13 +258,14 @@ neighbour_down(Pid, To) ->
 %% gen_server callbacks %%
 %%%%%%%%%%%%%%%%%%%%%%%%%%
 
+-spec init(Options :: options()) -> {ok, #st{}}.
 %% Initialize the hypar_node
 init(Options) ->
     %% Seed the random generator!
     random:seed(now()),
 
     %% Find this nodes id
-    ThisNode = proplists:get_value(id, Options),
+    ThisNode = proplists:get_value(id, Options, {{127,0,0,1},6000}),
     lager:info([{options, Options}], "Initializing..."),
     
     %% Initialize connection handlers
