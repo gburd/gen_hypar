@@ -18,7 +18,6 @@
          {k_passive, 4},
          {shuffle_period, 10000},
          {shuffle_buffer, 5},
-         {contact_node, none},
          {notify, none},
          {receiver, none}
         ]}

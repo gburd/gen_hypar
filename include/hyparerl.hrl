@@ -29,16 +29,45 @@
 %% @doc Type for shuffle history entries
 -type shuffle_ent() :: {reference(), list(id()), erlang:timestamp()}.
 
+%% @doc Type for the shuffle history
+-type shuffle_history() :: list(shuffle_ent()).
+
 %% @doc Represent the priority of a neighbour request
 -type priority() :: high | low.
 
-%% @doc Represent the options
--type options() :: list(proplists:property()).
+%% @doc Process name or pid
+-type proc() :: pid() | atom().
 
-%% @doc A view is just a list of identifiers
--type view() :: list(id()).
+%% @doc Represent the options
+-type options() :: list(option()).
+
+%% @doc All valid options
+-type option() ::
+        {id, id()}                      | %% Node identifier
+        {active_size, pos_integer()}    | %% Maximum number of active links
+        {passive_size, pos_integer()}   | %% Maximum number of passive nodes
+        {arwl, pos_integer()}           | %% Active random walk length
+        {prwl, pos_integer()}           | %% Passive random walk length
+        {k_active, pos_integer()}       | %% k samples from active view in shuffle
+        {k_passive, pos_integer()}      | %% k samples from passive view in shuffle
+        {shuffle_period, pos_integer()} | %% Shuffle period timer in milliseconds
+        {shuffle_buffer, pos_integer()} | %% Size of the shuffle cache
+        {notify, proc()}                | %% Process to nofity of up/down events
+        {receiver, proc()}.               %% Process that receives cluster messages
 
 %% @doc A <em>peer</em> consists of an identifier and a corresponding pid
 -record(peer, {id  :: id(),
-               pid :: atom() | pid()
+               pid :: pid()
               }).
+
+%% @doc A view
+-type view() :: list(id()).
+
+%% @doc Type of active view
+-type active_view() :: list(#peer{}).
+
+%% @doc Type of the passive view
+-type passive_view() :: view().
+
+%% @doc Exchange list are the same as a passive view
+-type xlist() :: view().

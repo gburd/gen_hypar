@@ -30,13 +30,15 @@
 -export([get_peers/0, get_passive_peers/0]).
 
 %% Send
--export([send/2, multi_send/2]).
+-export([send/2]).
 
+%% @doc Start the hyparerl application
 start() ->
     lager:start(),
     application:start(ranch),
     application:start(hyparerl).
 
+%% @doc Start a test-server with local ip and given port
 test_start(Port) ->
 
     lager:start(),
@@ -50,20 +52,22 @@ test_start(Port) ->
     application:set_env(hyparerl, id, {{127,0,0,1}, Port}),
     application:start(hyparerl).
 
+%% @doc Join a cluster via <em>ContactNode</em>.
 join_cluster(ContactNode) ->
     hypar_node:join_cluster(ContactNode).
 
+%% @doc Initate a shuffle request
 shuffle() ->
     hypar_node:shuffle().
 
+%% @doc Retrive all current active peers
 get_peers() ->
     hypar_node:get_peers().
 
+%% @doc Retrive all current passive peers
 get_passive_peers() ->
     hypar_node:get_passive_peers().
 
+%% @doc Send a binary message to <em>Peer</em>
 send(Peer, Bin) ->
-    hypar_node:send(Peer, Bin).
-
-multi_send(Peers, Bin) ->
-    hypar_node:multi_send(Peers, Bin).
+    connect:send(Peer, Bin).

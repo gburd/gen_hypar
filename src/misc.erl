@@ -56,6 +56,7 @@ random_elem(List) ->
 
 -spec take_n_random(N :: non_neg_integer(), List :: list(T)) -> list(T).
 %% @doc Take <em>N</em> random elements from <em>List</em>.
+take_n_random(_, []) -> [];
 take_n_random(N, List) -> 
     take_n_random(N, List, length(List)).
 
@@ -84,7 +85,7 @@ take_n_random(_, _, 0) -> [];
 take_n_random(N, L, Len) ->
     I = random:uniform(Len),
     {E, L1} = drop_return(I, L),
-    [E|take_n_random(N-1, L1, Len)].
+    [E|take_n_random(N-1, L1, Len-1)].
 
 -spec drop_return(N :: pos_integer(), L :: list(T), S :: list(T))
                  -> {T, list(T)}.
@@ -98,7 +99,7 @@ drop_return(N, [H|T], S) -> drop_return(N-1, T, [H|S]).
 %% @doc Helper-function for drop_n_random/2
 drop_n_random(L, 0, _) -> L;
 drop_n_random(_, _, 0) -> [];
-drop_n_random(L, N, Len) ->
+drop_n_random(L0, N, Len) ->
     I = random:uniform(Len),
-    {_, L} = drop_return(I, L),
+    {_, L} = drop_return(I, L0),
     drop_n_random(L, N-1, Len-1).
