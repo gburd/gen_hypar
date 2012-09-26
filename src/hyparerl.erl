@@ -41,6 +41,9 @@
 %% Send
 -export([send/2]).
 
+%% Identifier
+-export([encode_id/1, decode_id/1]).
+
 %%%%%%%%%
 %% API %%
 %%%%%%%%%
@@ -91,7 +94,7 @@ stop_notifying() ->
 %% Sending %%
 %%%%%%%%%%%%%
 
-%% @doc Send a binary message to <em>Peer</em>
+%% @doc Send a binary message <em>Bin</em> over connection <em>Conn</em>.
 send(Conn, Bin) ->
     connect:send(Conn, Bin).
 
@@ -106,6 +109,18 @@ receiver() ->
 %% @doc Remove calling process from the receivers list
 stop_receiving() ->
     hypar_node:stop_receiving().
+
+%%%%%%%%%%%%%%%%
+%% Identifier %%
+%%%%%%%%%%%%%%%%
+
+%% @doc Encode an identifier <em>Id</em> into a binary.
+encode_id(Id) ->
+    connect:encode_id(Id).
+
+%% @doc Decode a binary <em>BId</em> into an identifier.
+decode_id(BId) ->
+    connect:decode_id(BId).
 
 %%%%%%%%%%%%%
 %% Testing %%

@@ -52,6 +52,9 @@
 %% Start, stop & send
 -export([initialize/1, stop/0, send/2]).
 
+%% Identifiers
+-export({encode_id/1, decode_id/1]).
+
 %% Incoming events to start, stop and interact with connections to remote peers
 -export([join/1, forward_join/3, join_reply/1, neighbour/2, disconnect/1,
          shuffle/5, shuffle_reply/3]).
@@ -313,7 +316,7 @@ terminate(_, _, _) ->
 %%      <em>Id</em>.
 deliver(Id, Bin) ->
     [{receivers, Receivers}] = ets:lookup(rectab, receivers),
-    [Receiver ! {Id, Bin} || {Receiver,_} <- Receivers].
+    [Receiver ! {message, Id, Bin} || {Receiver,_} <- Receivers].
 
 %% @doc Parse the incoming stream of bytes in the active state.
 parse_packets(C, <<?MESSAGE, Len:32/integer, Rest0/binary>>)

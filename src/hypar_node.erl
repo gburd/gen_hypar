@@ -651,7 +651,7 @@ remove_receiver(Pid) ->
         false -> ok;
         {Pid, MRef} -> 
             lager:info("Removed process ~p from receiving list.~n", [Pid]),
-            erlang:unmonitor(MRef),
+            erlang:unmonitor(MRef, [flush]),
             Receivers = lists:keydelete(Pid, 1, Receivers0),
             ets:insert(rectab, {receivers, Receivers})
     end.
@@ -680,7 +680,7 @@ remove_notify(Pid, Notify) ->
             Notify;
         {Pid, MRef} ->
             lager:info("Removed process ~p from notify list.~n", [Pid]),
-            erlang:unmonitor(MRef),
+            erlang:unmonitor(MRef, [flush]),
             lists:keydelete(Pid, 1, Notify)
     end.
 
