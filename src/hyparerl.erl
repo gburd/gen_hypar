@@ -56,6 +56,7 @@
 start() ->
     lager:start(),
     application:start(ranch),
+    timer:sleep(100),
     application:start(hyparerl).
 
 %% @doc Join a cluster via <em>ContactNode</em>.
@@ -135,7 +136,6 @@ test_start(Port) ->
     application:load(hyparerl),
     application:set_env(hyparerl, id, {{127,0,0,1}, Port}),
     
-    application:set_env(hyparerl, receiver, test),
     application:start(hyparerl).
 
 %% @doc Join a local node on given port
