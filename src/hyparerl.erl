@@ -24,13 +24,15 @@
 -module(hyparerl).
 
 %% Operations
--export([start/0, test_start/1, join_cluster/1, shuffle/0]).
+-export([start/0, test_start/1, test_join/1, join_cluster/1, shuffle/0]).
 
 %% View
 -export([get_peers/0, get_passive_peers/0]).
 
 %% Send
 -export([send/2]).
+
+-include("hyparerl.hrl").
 
 %% @doc Start the hyparerl application
 start() ->
@@ -40,17 +42,18 @@ start() ->
 
 %% @doc Start a test-server with local ip and given port
 test_start(Port) ->
-
     lager:start(),
-    application:start(ranch),
-    
+    application:start(ranch),    
     timer:sleep(1000),
-
     lager:set_loglevel(lager_console_backend, debug),
-
     application:load(hyparerl),
     application:set_env(hyparerl, id, {{127,0,0,1}, Port}),
+    
+    application:set_env(hyparerl, receiver, test),
     application:start(hyparerl).
+
+test_join(Port) ->
+    hypar_node:join_cluster({{127,0,0,1},Port}).
 
 %% @doc Join a cluster via <em>ContactNode</em>.
 join_cluster(ContactNode) ->
@@ -70,4 +73,4 @@ get_passive_peers() ->
 
 %% @doc Send a binary message to <em>Peer</em>
 send(Peer, Bin) ->
-    connect:send(Peer, Bin).
+    connect:send(Peer#peer.conn, Bin).

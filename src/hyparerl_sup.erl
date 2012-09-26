@@ -31,8 +31,6 @@
 %% Supervisor callbacks
 -export([init/1]).
 
--include("hyparerl.hrl").
-
 %% ===================================================================
 %% API functions
 %% ===================================================================
@@ -47,5 +45,8 @@ start_link(Options) ->
 init([Options]) ->
     Node = {hypar_node,
             {hypar_node, start_link, [Options]},
-            permanent, 5000, worker, [hypar_man]},
-    {ok, { {one_for_all, 5, 10}, [Node]}}.
+            permanent, 5000, worker, [hypar_node]},
+    ConnectSup = {connect_sup,
+                  {connect_sup, start_link, [Options]},
+                  permanent, 5000, supervisor, [connect_sup]},
+    {ok, { {one_for_all, 5, 10}, [Node, ConnectSup]}}.

@@ -74,7 +74,7 @@ command(S) ->
            {call, hypar_node, disconnect, [elements(S#st.nodes)]},
            {call, hypar_node, error, [elements(S#st.nodes), an_error]}] ++
               [{call, hypar_node, shuffle, make_args(elements(S#st.active), elements(S#st.nodes), S)} || S#st.active =/= []] ++
-              [{call, hypar_node, shuffle_reply, [misc:take_n_random(S#st.xlistsize+1, S#st.nodes), elements(S#st.shuffles)]} || S#st.nodes =/= [], S#st.shuffles =/= []] ++
+              [{call, hypar_node, shuffle_reply, [elements(S#st.nodes, misc:take_n_random(S#st.xlistsize+1, S#st.nodes), elements(S#st.shuffles)]} || S#st.nodes =/= [], S#st.shuffles =/= []] ++
               [{call, hypar_node, forward_join, [elements(S#st.active), elements(S#st.nodes), choose(0,S#st.arwl)]} || S#st.active =/= []]
          ).
 

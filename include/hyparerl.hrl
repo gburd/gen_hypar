@@ -27,7 +27,7 @@
                inet:port_number()}.
 
 %% @doc Type for shuffle history entries
--type shuffle_ent() :: {reference(), list(id()), erlang:timestamp()}.
+-type shuffle_ent() :: {integer(), list(id()), erlang:timestamp()}.
 
 %% @doc Type for the shuffle history
 -type shuffle_history() :: list(shuffle_ent()).
@@ -57,7 +57,7 @@
 
 %% @doc A <em>peer</em> consists of an identifier and a corresponding pid
 -record(peer, {id  :: id(),
-               pid :: pid()
+               conn :: pid()
               }).
 
 %% @doc A view

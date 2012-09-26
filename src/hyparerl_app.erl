@@ -34,6 +34,7 @@
 %% ===================================================================
 
 start(_StartType, _StartArgs) ->
+    application:load(hyparerl),
     Options0 = application:get_all_env(hyparerl),
 
     %% Ensure that all nessecary parameters are defined, default those who
@@ -44,6 +45,7 @@ start(_StartType, _StartArgs) ->
                                       false -> [OptPair|Acc0]
                                   end
                           end, Options0, default_options()),
+    connect:initialize(Options),
     hyparerl_sup:start_link(Options).
 
 stop(_State) ->
@@ -52,7 +54,6 @@ stop(_State) ->
 %% @doc Default options for the hyparview-application
 default_options() ->
     [{id, {{127,0,0,1}, 6000}},
-     {temp_port, 5999},
      {active_size, 5},
      {passive_size, 30},
      {arwl, 6},
@@ -61,6 +62,7 @@ default_options() ->
      {k_passive, 4},
      {shuffle_period, 10000},
      {shuffle_buffer, 5},
-     {contact_node, none},
+     {timeout, 1000},
+     {send_timeout, 1000},
      {notify, none},
-     {recipient, none}].
+     {receiver, none}].
