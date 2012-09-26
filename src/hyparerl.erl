@@ -24,7 +24,7 @@
 -module(hyparerl).
 
 %% Operations
--export([start/1, join_cluster/1, shuffle/0]).
+-export([start/2, join_cluster/1, shuffle/0]).
 
 %% Notifications
 -export([notify_me/0, stop_notifying/0]).
@@ -50,13 +50,14 @@
 %%%%%%%%%%%%%%%%
 
 %% @doc Start the hyparerl application
-start(Id) ->
+start(Id, Receiver) ->
     lager:start(),
     application:start(ranch),
     timer:sleep(100),
 
     application:load(hyparerl),
     application:set_env(hyparerl, id, Id),
+    application:set_env(hyparerl, receiver, Receiver),
     application:start(hyparerl).
 
 %% @doc Join a cluster via <em>ContactNode</em>.

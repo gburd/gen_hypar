@@ -180,14 +180,14 @@ neighbour_up(undefined, To, Conn) ->
     lager:info("Link up: ~p~n", [{To, Conn}]);
 neighbour_up(Serv, To, Conn) ->
     lager:info("Link up: ~p~n", [{To, Conn}]),
-    gen_server:cast(Serv, {link_up, {To, Conn}}).
+    Serv ! {link_up, {To, Conn}}.
 
 %% @doc Notify <em>Pids</em> of a <b>link_down</b> event to node <em>To</em>.
 neighbour_down(undefined, To) ->
     lager:info("Link down: ~p~n", [To]);
 neighbour_down(Serv, To) ->
     lager:info("Link down: ~p~n", [To]), 
-    gen_server:cast(Serv, {link_down, To}).
+    Serv !  {link_down, To}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks %%
@@ -207,9 +207,7 @@ init(Options) ->
     ShufflePeriod = proplists:get_value(shuffle_period, Options),
     shuffle_timer(ShufflePeriod),
 
-    {ok, #st{id       = ThisNode,
-             opts     = Options
-            }}.
+    {ok, #st{id = ThisNode, opts = Options}}.
 
 %% Join a cluster via a given contact-node
 %% According to the paper this should only be done once. I don't really see
