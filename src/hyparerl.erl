@@ -24,7 +24,7 @@
 -module(hyparerl).
 
 %% Operations
--export([start/0, join_cluster/1, shuffle/0]).
+-export([start/1, join_cluster/1, shuffle/0]).
 
 %% Notifications
 -export([notify_me/0, stop_notifying/0]).
