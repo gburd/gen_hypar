@@ -53,7 +53,7 @@
 -export([initialize/1, stop/0, send/2]).
 
 %% Identifiers
--export({encode_id/1, decode_id/1]).
+-export([encode_id/1, decode_id/1]).
 
 %% Incoming events to start, stop and interact with connections to remote peers
 -export([join/1, forward_join/3, join_reply/1, neighbour/2, disconnect/1,
