@@ -53,10 +53,13 @@
 %%%%%%%%%%%%%%%%
 
 %% @doc Start the hyparerl application
-start() ->
+start(Id) ->
     lager:start(),
     application:start(ranch),
     timer:sleep(100),
+
+    application:load(hyparerl),
+    application:set_env(hyparerl, id, Id),
     application:start(hyparerl).
 
 %% @doc Join a cluster via <em>ContactNode</em>.
@@ -131,7 +134,7 @@ decode_id(BId) ->
 test_start(Port) ->
     lager:start(),
     application:start(ranch),    
-    timer:sleep(1000),
+    timer:sleep(100),
     lager:set_loglevel(lager_console_backend, debug),
     application:load(hyparerl),
     application:set_env(hyparerl, id, {{127,0,0,1}, Port}),
