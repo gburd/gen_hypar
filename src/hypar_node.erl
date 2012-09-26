@@ -63,7 +63,7 @@
              shist = []    :: shuffle_history(), %% History of shuffle requests sent
              scount = 0    :: pos_integer(),     %% The shuffle id
              opts          :: options(),         %% Options
-             notify        :: proc() |undefined  %% Notify process with link_up/link_down
+             notify        :: proc() |undefined, %% Notify process with link_up/link_down
             }).
 
 %%%%%%%%%
