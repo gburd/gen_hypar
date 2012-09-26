@@ -24,7 +24,16 @@
 -module(hyparerl).
 
 %% Operations
--export([start/0, test_start/1, test_join/1, join_cluster/1, shuffle/0]).
+-export([start/0, join_cluster/1, shuffle/0]).
+
+%% Notifications
+-export([notify_me/0, stop_notifying/0]).
+
+%% Receiving
+-export([receiver/0, stop_receiving/0]).
+
+%% Testing
+-export([test_start/1, test_join/1]).
 
 %% View
 -export([get_peers/0, get_passive_peers/0]).
@@ -32,13 +41,75 @@
 %% Send
 -export([send/2]).
 
--include("hyparerl.hrl").
+%%%%%%%%%
+%% API %%
+%%%%%%%%%
+
+%%%%%%%%%%%%%%%%
+%% Operations %%
+%%%%%%%%%%%%%%%%
 
 %% @doc Start the hyparerl application
 start() ->
     lager:start(),
     application:start(ranch),
     application:start(hyparerl).
+
+%% @doc Join a cluster via <em>ContactNode</em>.
+join_cluster(ContactNode) ->
+    hypar_node:join_cluster(ContactNode).
+
+%% @doc Initate a shuffle request
+shuffle() ->
+    hypar_node:shuffle().
+
+%%%%%%%%%%
+%% View %%
+%%%%%%%%%%
+
+%% @doc Retrive all current active peers
+get_peers() ->
+    hypar_node:get_peers().
+
+%% @doc Retrive all current passive peers
+get_passive_peers() ->
+    hypar_node:get_passive_peers().
+
+%%%%%%%%%%%%%%%%%%
+%% Notification %%
+%%%%%%%%%%%%%%%%%%
+
+%% @doc Add calling process to the notify list, return current active view.
+notify_me() ->
+    hypar_node:notify_me().
+
+%% @doc Remove calling process from the notify list
+stop_notifying() ->
+    hypar_node:stop_notifying().
+
+%%%%%%%%%%%%%
+%% Sending %%
+%%%%%%%%%%%%%
+
+%% @doc Send a binary message to <em>Peer</em>
+send(Conn, Bin) ->
+    connect:send(Conn, Bin).
+
+%%%%%%%%%%%%%%%
+%% Receiving %%
+%%%%%%%%%%%%%%%
+
+%% @doc Add calling process to the receivers list
+receiver() ->
+    hypar_node:receiver().
+
+%% @doc Remove calling process from the receivers list
+stop_receiving() ->
+    hypar_node:stop_receiving().
+
+%%%%%%%%%%%%%
+%% Testing %%
+%%%%%%%%%%%%%
 
 %% @doc Start a test-server with local ip and given port
 test_start(Port) ->
@@ -52,25 +123,6 @@ test_start(Port) ->
     application:set_env(hyparerl, receiver, test),
     application:start(hyparerl).
 
+%% @doc Join a local node on given port
 test_join(Port) ->
     hypar_node:join_cluster({{127,0,0,1},Port}).
-
-%% @doc Join a cluster via <em>ContactNode</em>.
-join_cluster(ContactNode) ->
-    hypar_node:join_cluster(ContactNode).
-
-%% @doc Initate a shuffle request
-shuffle() ->
-    hypar_node:shuffle().
-
-%% @doc Retrive all current active peers
-get_peers() ->
-    hypar_node:get_peers().
-
-%% @doc Retrive all current passive peers
-get_passive_peers() ->
-    hypar_node:get_passive_peers().
-
-%% @doc Send a binary message to <em>Peer</em>
-send(Peer, Bin) ->
-    connect:send(Peer#peer.conn, Bin).

@@ -26,7 +26,10 @@
 %%      ==Disconnect==
 %%      <<?DISCONNECT>>
 %%      ==Shuffle==
-%%      <<?SHUFFLE, Req:6/binary, 
+%%      <<?SHUFFLE, BReq:6/binary, SId/integer, TTL/integer, Len/integer, XList/binary>>
+%%      ==Shuffle reply==
+%%      <<?SHUFFLEREPLY, SId/integer, Len/integer, XList/binary>>
+%%
 %% @todo
 %%      Because of the format of the protocol some configuration parameters
 %%      have become restricted. I do not think that it imposes any problem.
@@ -263,7 +266,7 @@ active({shuffle, Req, SId, TTL, XList}, C) ->
 
 active(disconnect, _, C) ->
     gen_tcp:send(C#conn.socket, <<?DISCONNECT>>),
-    {stop, ok, normal, C}.
+    {next_state, temporary, ok, C}.
 
 %% Wait for the go-ahead from the ranch server
 wait_for_socket(timeout, {LPid, C}) ->
@@ -308,14 +311,15 @@ terminate(_, _, _) ->
 
 %% @doc Deliver a message <em>Bin</em> to <em>Receiver</em> from connection
 %%      <em>Id</em>.
-deliver(Receiver, Id, Bin) ->
-    Receiver ! {Id, Bin}.
+deliver(Id, Bin) ->
+    [{receivers, Receivers}] = ets:lookup(rectab, receivers),
+    [Receiver ! {Id, Bin} || {Receiver,_} <- Receivers].
 
 %% @doc Parse the incoming stream of bytes in the active state.
 parse_packets(C, <<?MESSAGE, Len:32/integer, Rest0/binary>>)
   when byte_size(Rest0) >= Len -> 
     <<Msg:Len/binary, Rest/binary>> = Rest0,
-    deliver(C#conn.receiver, C#conn.remote, Msg),
+    deliver(C#conn.remote, Msg),
     parse_packets(C, Rest);
 parse_packets(C, <<?FORWARDJOIN, BReq:6/binary, TTL/integer, Rest0/binary>>) ->
     hypar_node:forward_join(C#conn.remote, decode_id(BReq), TTL),
@@ -330,7 +334,8 @@ parse_packets(C, <<?SHUFFLE, BReq:6/binary, SId/integer, TTL/integer,
     parse_packets(C, Rest);
 parse_packets(C, <<?DISCONNECT, _/binary>>) ->
     hypar_node:disconnect(C#conn.remote),
-    {stop, disconnect, C};
+    gen_tcp:close(C#conn.socket),
+    {stop, normal, C};
 parse_packets(C, <<>>) ->
     {next_state, active, C};
 parse_packets(C, Rest) ->

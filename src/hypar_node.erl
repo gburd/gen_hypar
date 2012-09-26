@@ -37,6 +37,9 @@
 %% Operations
 -export([start_link/1, stop/0, join_cluster/1, shuffle/0]).
 
+%% Notifiees & Receivers
+-export([notify_me/0, stop_notifying/0, receiver/0, stop_receiving/0]).
+
 %% View related
 -export([get_peers/0, get_passive_peers/0]).
 
@@ -60,7 +63,7 @@
              shist = []    :: shuffle_history(), %% History of shuffle requests sent
              scount = 0    :: pos_integer(),     %% The shuffle id
              opts          :: options(),         %% Options
-             notify        :: proc()             %% Notify process with link_up/link_down
+             notify        :: list(pid())        %% Notify process with link_up/link_down
             }).
 
 %%%%%%%%%
@@ -163,15 +166,36 @@ shuffle_reply(SId, ReplyXList) ->
 %% Notify %%
 %%%%%%%%%%%%
 
-%% @doc Notify <em>Pid</em> of a <b>link_up</b> event to node <em>To</em>.
-neighbour_up(Pid, To, Conn) ->
-    lager:info("Link up: ~p~n", [{To, Conn}]),
-    Pid ! {link_up, {To, Conn}}.
+%% @doc Add yourself to the processes that receives notifications
+%%      Also returns the current active view
+notify_me() ->
+    gen_server:call(?MODULE, notify_me).
 
-%% @doc Notify <em>Pid</em> of a <b>link_down</b> event to node <em>To</em>.
-neighbour_down(Pid, To) ->
+%% @doc Stop sending notification to a process
+stop_notifying() ->
+    gen_server:call(?MODULE, stop_notifying).
+
+%% @doc Notify <em>Pids</em> of a <b>link_up</b> event to node <em>To</em>.
+neighbour_up(Pids, To, Conn) ->
+    lager:info("Link up: ~p~n", [{To, Conn}]),
+    [Pid ! {link_up, {To, Conn}} || Pid <- Pids].
+
+%% @doc Notify <em>Pids</em> of a <b>link_down</b> event to node <em>To</em>.
+neighbour_down(Pids, To) ->
     lager:info("Link down: ~p~n", [To]),
-    Pid ! {neighbour_down, To}.
+    [Pid ! {neighbour_down, To} || Pid <- Pids].
+
+%%%%%%%%%%%%%%%
+%% Receivers %%
+%%%%%%%%%%%%%%%
+
+%% @doc Add a process to send messages from the overlay to.
+receiver() ->
+    gen_server:call(?MODULE, receiver).
+
+%% @doc Remove a process to send messages to
+stop_receiving() ->
+    gen_server:call(?MODULE, stop_receiving).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks %%
@@ -192,12 +216,13 @@ init(Options) ->
     ShufflePeriod = proplists:get_value(shuffle_period, Options),
     shuffle_timer(ShufflePeriod),
 
-    %% Construct state
-    Notify   = proplists:get_value(notify, Options),
-
+    %% Create the receivers ets table
+    ets:new(rectab, [named_table, {read_concurrency, true}]),
+    ets:insert(rectab, {receivers, []}),
+    
     {ok, #st{id       = ThisNode,
              opts     = Options,
-             notify   = Notify
+             notify   = []
             }}.
 
 %% Join a cluster via a given contact-node
@@ -310,6 +335,25 @@ handle_call(get_peers, _, S) ->
 handle_call(get_passive_peers, _, S) ->
     {reply, S#st.passivev, S};
 
+%% Start sending notifications to a process
+handle_call(notify_me, {Pid, _}, S) ->
+    Active = [{P#peer.id, P#peer.conn} || P <- S#st.activev],
+    {reply, Active, S#st{notify=add_notify(Pid, S#st.notify)}};
+
+%% Stop notifying a process
+handle_call(stop_notifying, {Pid, _}, S) ->
+    {reply, ok, S#st{notify=remove_notify(Pid, S#st.notify)}};
+
+%% Add a receiver of messages from the overlay
+handle_call(receiver, {Pid, _}, S) ->
+    add_receiver(Pid),
+    {reply, ok, S};
+
+%% Remove a receiver
+handle_call(stop_receiving, {Pid, _}, S) ->
+    remove_receiver(Pid),
+    {reply, ok, S};
+
 %% Stop the hypar_node
 handle_call(stop, _, S) ->
     connect:stop(),
@@ -404,7 +448,16 @@ handle_info(shuffle, S) ->
     %% Cleanup shuffle history
     BufferSize = proplists:get_value(shuffle_buffer, Opts),
     SHist = clear_shist(BufferSize, SHist0),
-    {noreply, S#st{scount=S#st.scount+1, shist=SHist}}.
+    {noreply, S#st{scount=S#st.scount+1, shist=SHist}};
+handle_info({'DOWN', MRef, process, Pid, _}, S) ->
+    Notify = S#st.notify,
+    case lists:keyfind(Pid, 1, Notify) of
+        false ->             
+            remove_receiver(Pid),
+            {noreply, S};
+        {Pid, MRef} ->
+            {noreply, S#st{notify=remove_notify(Pid,Notify)}}
+    end.
 
 code_change(_, S, _) ->
     {ok, S}.
@@ -572,6 +625,63 @@ add_node_passive(Node, S) ->
             S#st{passivev=PassiveV};
         false ->
             S
+    end.
+
+%%%%%%%%%%%%%%%%%%%%%%%
+%% Receivers related %%
+%%%%%%%%%%%%%%%%%%%%%%%
+
+%% @private
+%% @doc Add a receiver
+add_receiver(Pid) ->
+    [{receivers, Receivers}] = ets:lookup(rectab, receivers),
+    case lists:keyfind(Pid, 1, Receivers) of
+        false ->
+            lager:info("Added process ~p to receiving list.~n", [Pid]),
+            MRef = erlang:monitor(process, Pid),
+            ets:insert(rectab, {receivers, [{Pid,MRef}|Receivers]});
+        _ -> ok
+    end.
+
+%% @private
+%% @doc Remove a receiver
+remove_receiver(Pid) ->
+    [{receivers, Receivers0}] = ets:lookup(rectab, receivers),
+    case lists:keyfind(Pid, 1, Receivers0) of
+        false -> ok;
+        {Pid, MRef} -> 
+            lager:info("Removed process ~p from receiving list.~n", [Pid]),
+            erlang:unmonitor(MRef),
+            Receivers = lists:keydelete(Pid, 1, Receivers0),
+            ets:insert(rectab, {receivers, Receivers})
+    end.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Notification related %%  
+%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%% @private
+%% @doc Add a process to the notifiees
+add_notify(Pid, Notify) ->
+    case lists:keyfind(Pid, 1, Notify) of
+        false -> 
+            lager:info("Added process ~p to notify list.~n", [Pid]),
+            MRef = erlang:monitor(process, Pid),
+            [{Pid, MRef}|Notify];
+        _ ->
+            Notify
+    end.
+
+%% @private
+%% @doc Remove a process from the notifiees
+remove_notify(Pid, Notify) ->
+    case lists:keyfind(Pid, 1, Notify) of
+        false ->
+            Notify;
+        {Pid, MRef} ->
+            lager:info("Removed process ~p from notify list.~n", [Pid]),
+            erlang:unmonitor(MRef),
+            lists:keydelete(Pid, 1, Notify)
     end.
 
 %%%%%%%%%%%%%%%
