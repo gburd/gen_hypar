@@ -96,7 +96,7 @@ shuffle() ->
 %% Peer operations %%
 %%%%%%%%%%%%%%%%%%%%%
 
--spec get_peers() -> active_view().
+-spec get_peers() -> list({id(), pid()}).
 %% @doc Get all the current active peers.
 get_peers() ->
     gen_server:call(?MODULE, get_peers).
@@ -164,9 +164,9 @@ shuffle_reply(SId, ReplyXList) ->
 %%%%%%%%%%%%
 
 %% @doc Notify <em>Pid</em> of a <b>link_up</b> event to node <em>To</em>.
-neighbour_up(Pid, To) ->
-    lager:info("Link up: ~p~n", [To]),
-    Pid ! {link_up, To}.
+neighbour_up(Pid, To, Conn) ->
+    lager:info("Link up: ~p~n", [{To, Conn}]),
+    Pid ! {link_up, {To, Conn}}.
 
 %% @doc Notify <em>Pid</em> of a <b>link_down</b> event to node <em>To</em>.
 neighbour_down(Pid, To) ->
@@ -303,7 +303,8 @@ handle_call({error, Sender, Reason}, _, S0) ->
 
 %% Return current active peers
 handle_call(get_peers, _, S) ->
-    {reply, S#st.activev, S};
+    Active = [{P#peer.id, P#peer.conn} || P <- S#st.activev],
+    {reply, Active, S};
 
 %% Return current passive peers
 handle_call(get_passive_peers, _, S) ->
