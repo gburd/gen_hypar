@@ -314,15 +314,14 @@ terminate(_, _, _) ->
 
 %% @doc Deliver a message <em>Bin</em> to <em>Receiver</em> from connection
 %%      <em>Id</em>.
-deliver(Id, Bin) ->
-    [{receivers, Receivers}] = ets:lookup(rectab, receivers),
-    [Receiver ! {message, Id, Bin} || {Receiver,_} <- Receivers].
+deliver(Receiver, Id, Bin) ->
+    gen_server:cast(Receiver, {message, Id, Bin}).
 
 %% @doc Parse the incoming stream of bytes in the active state.
 parse_packets(C, <<?MESSAGE, Len:32/integer, Rest0/binary>>)
   when byte_size(Rest0) >= Len -> 
     <<Msg:Len/binary, Rest/binary>> = Rest0,
-    deliver(C#conn.remote, Msg),
+    deliver(C#conn.receiver, C#conn.remote, Msg),
     parse_packets(C, Rest);
 parse_packets(C, <<?FORWARDJOIN, BReq:6/binary, TTL/integer, Rest0/binary>>) ->
     hypar_node:forward_join(C#conn.remote, decode_id(BReq), TTL),

@@ -37,8 +37,8 @@
 %% Operations
 -export([start_link/1, stop/0, join_cluster/1, shuffle/0]).
 
-%% Notifiees & Receivers
--export([notify_me/0, stop_notifying/0, receiver/0, stop_receiving/0]).
+%% Notification
+-export([notify_me/0, stop_notifying/0]).
 
 %% View related
 -export([get_peers/0, get_passive_peers/0]).
@@ -63,7 +63,7 @@
              shist = []    :: shuffle_history(), %% History of shuffle requests sent
              scount = 0    :: pos_integer(),     %% The shuffle id
              opts          :: options(),         %% Options
-             notify        :: list(pid())        %% Notify process with link_up/link_down
+             notify        :: proc() |undefined  %% Notify process with link_up/link_down
             }).
 
 %%%%%%%%%
@@ -176,26 +176,18 @@ stop_notifying() ->
     gen_server:call(?MODULE, stop_notifying).
 
 %% @doc Notify <em>Pids</em> of a <b>link_up</b> event to node <em>To</em>.
-neighbour_up(Pids, To, Conn) ->
+neighbour_up(undefined, To, Conn) ->
+    lager:info("Link up: ~p~n", [{To, Conn}]);
+neighbour_up(Serv, To, Conn) ->
     lager:info("Link up: ~p~n", [{To, Conn}]),
-    [Pid ! {link_up, {To, Conn}} || Pid <- Pids].
+    gen_server:cast(Serv, {link_up, {To, Conn}}).
 
 %% @doc Notify <em>Pids</em> of a <b>link_down</b> event to node <em>To</em>.
-neighbour_down(Pids, To) ->
-    lager:info("Link down: ~p~n", [To]),
-    [Pid ! {neighbour_down, To} || Pid <- Pids].
-
-%%%%%%%%%%%%%%%
-%% Receivers %%
-%%%%%%%%%%%%%%%
-
-%% @doc Add a process to send messages from the overlay to.
-receiver() ->
-    gen_server:call(?MODULE, receiver).
-
-%% @doc Remove a process to send messages to
-stop_receiving() ->
-    gen_server:call(?MODULE, stop_receiving).
+neighbour_down(undefined, To) ->
+    lager:info("Link down: ~p~n", [To]);
+neighbour_down(Serv, To) ->
+    lager:info("Link down: ~p~n", [To]), 
+    gen_server:cast(Serv, {link_down, To}).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks %%
@@ -211,18 +203,12 @@ init(Options) ->
     ThisNode = proplists:get_value(id, Options),
     lager:info([{options, Options}], "Initializing..."),
 
-
     %% Start shuffle
     ShufflePeriod = proplists:get_value(shuffle_period, Options),
     shuffle_timer(ShufflePeriod),
 
-    %% Create the receivers ets table
-    ets:new(rectab, [named_table, {read_concurrency, true}]),
-    ets:insert(rectab, {receivers, []}),
-    
     {ok, #st{id       = ThisNode,
-             opts     = Options,
-             notify   = []
+             opts     = Options
             }}.
 
 %% Join a cluster via a given contact-node
@@ -336,23 +322,19 @@ handle_call(get_passive_peers, _, S) ->
     {reply, S#st.passivev, S};
 
 %% Start sending notifications to a process
-handle_call(notify_me, {Pid, _}, S) ->
+handle_call(notify_me, {Pid, _}, S) when S#st.notify =:= undefined->
+    MRef = erlang:monitor(process, Pid),
     Active = [{P#peer.id, P#peer.conn} || P <- S#st.activev],
-    {reply, Active, S#st{notify=add_notify(Pid, S#st.notify)}};
+    {reply, Active, S#st{notify={Pid, MRef}}};
+handle_call(notify_me, _, S) ->
+    {reply, {error, already_notifying}, S};
 
 %% Stop notifying a process
-handle_call(stop_notifying, {Pid, _}, S) ->
-    {reply, ok, S#st{notify=remove_notify(Pid, S#st.notify)}};
-
-%% Add a receiver of messages from the overlay
-handle_call(receiver, {Pid, _}, S) ->
-    add_receiver(Pid),
-    {reply, ok, S};
-
-%% Remove a receiver
-handle_call(stop_receiving, {Pid, _}, S) ->
-    remove_receiver(Pid),
-    {reply, ok, S};
+handle_call(stop_notifying, {Pid, _}, S=#st{notify={Pid,MRef}}) ->
+    erlang:unmonitor(MRef, [flush]),
+    {reply, ok, S#st{notify=undefined}};
+handle_call(stop_notifying, _, S) ->
+    {reply, {error, not_notifying}, S};
 
 %% Stop the hypar_node
 handle_call(stop, _, S) ->
@@ -448,16 +430,7 @@ handle_info(shuffle, S) ->
     %% Cleanup shuffle history
     BufferSize = proplists:get_value(shuffle_buffer, Opts),
     SHist = clear_shist(BufferSize, SHist0),
-    {noreply, S#st{scount=S#st.scount+1, shist=SHist}};
-handle_info({'DOWN', MRef, process, Pid, _}, S) ->
-    Notify = S#st.notify,
-    case lists:keyfind(Pid, 1, Notify) of
-        false ->             
-            remove_receiver(Pid),
-            {noreply, S};
-        {Pid, MRef} ->
-            {noreply, S#st{notify=remove_notify(Pid,Notify)}}
-    end.
+    {noreply, S#st{scount=(S#st.scount+1) rem 256, shist=SHist}}.
 
 code_change(_, S, _) ->
     {ok, S}.
@@ -625,63 +598,6 @@ add_node_passive(Node, S) ->
             S#st{passivev=PassiveV};
         false ->
             S
-    end.
-
-%%%%%%%%%%%%%%%%%%%%%%%
-%% Receivers related %%
-%%%%%%%%%%%%%%%%%%%%%%%
-
-%% @private
-%% @doc Add a receiver
-add_receiver(Pid) ->
-    [{receivers, Receivers}] = ets:lookup(rectab, receivers),
-    case lists:keyfind(Pid, 1, Receivers) of
-        false ->
-            lager:info("Added process ~p to receiving list.~n", [Pid]),
-            MRef = erlang:monitor(process, Pid),
-            ets:insert(rectab, {receivers, [{Pid,MRef}|Receivers]});
-        _ -> ok
-    end.
-
-%% @private
-%% @doc Remove a receiver
-remove_receiver(Pid) ->
-    [{receivers, Receivers0}] = ets:lookup(rectab, receivers),
-    case lists:keyfind(Pid, 1, Receivers0) of
-        false -> ok;
-        {Pid, MRef} -> 
-            lager:info("Removed process ~p from receiving list.~n", [Pid]),
-            erlang:unmonitor(MRef, [flush]),
-            Receivers = lists:keydelete(Pid, 1, Receivers0),
-            ets:insert(rectab, {receivers, Receivers})
-    end.
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% Notification related %%  
-%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-%% @private
-%% @doc Add a process to the notifiees
-add_notify(Pid, Notify) ->
-    case lists:keyfind(Pid, 1, Notify) of
-        false -> 
-            lager:info("Added process ~p to notify list.~n", [Pid]),
-            MRef = erlang:monitor(process, Pid),
-            [{Pid, MRef}|Notify];
-        _ ->
-            Notify
-    end.
-
-%% @private
-%% @doc Remove a process from the notifiees
-remove_notify(Pid, Notify) ->
-    case lists:keyfind(Pid, 1, Notify) of
-        false ->
-            Notify;
-        {Pid, MRef} ->
-            lager:info("Removed process ~p from notify list.~n", [Pid]),
-            erlang:unmonitor(MRef, [flush]),
-            lists:keydelete(Pid, 1, Notify)
     end.
 
 %%%%%%%%%%%%%%%

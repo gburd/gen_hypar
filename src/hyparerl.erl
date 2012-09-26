@@ -29,9 +29,6 @@
 %% Notifications
 -export([notify_me/0, stop_notifying/0]).
 
-%% Receiving
--export([receiver/0, stop_receiving/0]).
-
 %% Testing
 -export([test_start/1, test_join/1]).
 
@@ -101,18 +98,6 @@ stop_notifying() ->
 %% @doc Send a binary message <em>Bin</em> over connection <em>Conn</em>.
 send(Conn, Bin) ->
     connect:send(Conn, Bin).
-
-%%%%%%%%%%%%%%%
-%% Receiving %%
-%%%%%%%%%%%%%%%
-
-%% @doc Add calling process to the receivers list
-receiver() ->
-    hypar_node:receiver().
-
-%% @doc Remove calling process from the receivers list
-stop_receiving() ->
-    hypar_node:stop_receiving().
 
 %%%%%%%%%%%%%%%%
 %% Identifier %%
