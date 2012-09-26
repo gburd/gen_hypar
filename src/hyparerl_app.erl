@@ -63,6 +63,4 @@ default_options() ->
      {shuffle_period, 10000},
      {shuffle_buffer, 5},
      {timeout, 1000},
-     {send_timeout, 1000},
-     {notify, none},
-     {receiver, none}].
+     {send_timeout, 1000}].

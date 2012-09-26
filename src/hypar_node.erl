@@ -483,7 +483,7 @@ add_node_active(Peer, S0) ->
                     false -> S0
                 end,
             %% Notify link change
-            neighbour_up(S#st.notify, Id),
+            neighbour_up(S#st.notify, Id, Peer#peer.conn),
             S#st{activev=[Peer|S#st.activev]};
         false ->
             S0
