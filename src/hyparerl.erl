@@ -24,13 +24,7 @@
 -module(hyparerl).
 
 %% Operations
--export([start/2, join_cluster/1, shuffle/0]).
-
-%% Notifications
--export([notify_me/0, stop_notifying/0]).
-
-%% Testing
--export([test_start/1, test_join/1]).
+-export([start/3, start_local/2, join_cluster/1, shuffle/0]).
 
 %% View
 -export([get_peers/0, get_passive_peers/0]).
@@ -41,6 +35,9 @@
 %% Identifier
 -export([encode_id/1, decode_id/1]).
 
+%% Testing
+-export([local_id/1, join_local/1]).
+
 %%%%%%%%%
 %% API %%
 %%%%%%%%%
@@ -49,15 +46,23 @@
 %% Operations %%
 %%%%%%%%%%%%%%%%
 
-%% @doc Start the hyparerl application
-start(Id, Receiver) ->
+start_local(Port, Target) ->
+    start({127,0,0,1}, Port, Target).
+
+%% @doc Start the hyparerl application at <em>IP:Port<em>. All messages received
+%%      from the overlay is sent to <em>Target</em>. The target process is also
+%%      notified when link changes happen with {link_up, {IP,Port}, Pid} and
+%%      {link_down, {IP,Port}}. Use hyparerl:send(Conn, Bin) to send binary data
+%%      to a peer.
+start(IP, Port, Target) ->
     lager:start(),
     application:start(ranch),
     timer:sleep(100),
 
+    Id = {IP, Port},
     application:load(hyparerl),
     application:set_env(hyparerl, id, Id),
-    application:set_env(hyparerl, receiver, Receiver),
+    application:set_env(hyparerl, target, Target),
     application:start(hyparerl).
 
 %% @doc Join a cluster via <em>ContactNode</em>.
@@ -79,18 +84,6 @@ get_peers() ->
 %% @doc Retrive all current passive peers
 get_passive_peers() ->
     hypar_node:get_passive_peers().
-
-%%%%%%%%%%%%%%%%%%
-%% Notification %%
-%%%%%%%%%%%%%%%%%%
-
-%% @doc Add calling process to the notify list, return current active view.
-notify_me() ->
-    hypar_node:notify_me().
-
-%% @doc Remove calling process from the notify list
-stop_notifying() ->
-    hypar_node:stop_notifying().
 
 %%%%%%%%%%%%%
 %% Sending %%
@@ -116,17 +109,10 @@ decode_id(BId) ->
 %% Testing %%
 %%%%%%%%%%%%%
 
-%% @doc Start a test-server with local ip and given port
-test_start(Port) ->
-    lager:start(),
-    application:start(ranch),    
-    timer:sleep(100),
-    lager:set_loglevel(lager_console_backend, debug),
-    application:load(hyparerl),
-    application:set_env(hyparerl, id, {{127,0,0,1}, Port}),
-    
-    application:start(hyparerl).
+%% @doc Local identifier
+local_id(Port) ->
+    {{127,0,0,1}, Port}.
 
 %% @doc Join a local node on given port
-test_join(Port) ->
+join_local(Port) ->
     hypar_node:join_cluster({{127,0,0,1},Port}).

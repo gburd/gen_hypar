@@ -37,9 +37,6 @@
 %% Operations
 -export([start_link/1, stop/0, join_cluster/1, shuffle/0]).
 
-%% Notification
--export([notify_me/0, stop_notifying/0]).
-
 %% View related
 -export([get_peers/0, get_passive_peers/0]).
 
@@ -63,8 +60,8 @@
              shist = []    :: shuffle_history(), %% History of shuffle requests sent
              scount = 0    :: pos_integer(),     %% The shuffle id
              opts          :: options(),         %% Options
-             notify        :: proc() |undefined, %% Notify process with link_up/link_down
-            }).
+             target        :: atom()             %% Target process that receives
+            }).                                  %% link events and messages
 
 %%%%%%%%%
 %% API %%
@@ -166,28 +163,6 @@ shuffle_reply(SId, ReplyXList) ->
 %% Notify %%
 %%%%%%%%%%%%
 
-%% @doc Add yourself to the processes that receives notifications
-%%      Also returns the current active view
-notify_me() ->
-    gen_server:call(?MODULE, notify_me).
-
-%% @doc Stop sending notification to a process
-stop_notifying() ->
-    gen_server:call(?MODULE, stop_notifying).
-
-%% @doc Notify <em>Pids</em> of a <b>link_up</b> event to node <em>To</em>.
-neighbour_up(undefined, To, Conn) ->
-    lager:info("Link up: ~p~n", [{To, Conn}]);
-neighbour_up(Serv, To, Conn) ->
-    lager:info("Link up: ~p~n", [{To, Conn}]),
-    Serv ! {link_up, {To, Conn}}.
-
-%% @doc Notify <em>Pids</em> of a <b>link_down</b> event to node <em>To</em>.
-neighbour_down(undefined, To) ->
-    lager:info("Link down: ~p~n", [To]);
-neighbour_down(Serv, To) ->
-    lager:info("Link down: ~p~n", [To]), 
-    Serv !  {link_down, To}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks %%
@@ -202,12 +177,15 @@ init(Options) ->
     %% Find this nodes id
     ThisNode = proplists:get_value(id, Options),
     lager:info([{options, Options}], "Initializing..."),
+    
+    %% Find target process
+    Target = proplists:get_value(target, Options),    
 
     %% Start shuffle
     ShufflePeriod = proplists:get_value(shuffle_period, Options),
     shuffle_timer(ShufflePeriod),
-
-    {ok, #st{id = ThisNode, opts = Options}}.
+    
+    {ok, #st{id=ThisNode, opts=Options, target=Target}}.
 
 %% Join a cluster via a given contact-node
 %% According to the paper this should only be done once. I don't really see
@@ -261,7 +239,6 @@ handle_call({disconnect, Sender}, _, S0) ->
         #peer{id=Sender} ->
             %% Disconnect the peer, close the connection and add node to passive view
             ActiveV = lists:keydelete(Sender, #peer.id, S0#st.activev),
-            neighbour_down(S0#st.notify, Sender),
             {reply, ok, add_node_passive(Sender, S0#st{activev=ActiveV})};
         false ->
             {reply, {error, not_in_active}, S0}
@@ -297,18 +274,10 @@ handle_call({neighbour, Sender, Priority},{Pid,_} , S) ->
 
 %% Handle failing connections. Try to find a new one if possible
 handle_call({error, Sender, Reason}, _, S0) ->
-    case lists:keyfind(Sender, #peer.id, S0#st.activev) of
-        false ->
-            lager:error("Received error ~p from non-active link ~p~n",
-                        [Reason, Sender]),
-            {reply, {error, not_in_active}, S0};
-        #peer{} ->
-            lager:error("Active link to ~p failed with error ~p.~n",
-                        [Sender, Reason]),
-            neighbour_down(S0#st.notify, Sender),
-            S = S0#st{activev=lists:keydelete(Sender, #peer.id, S0#st.activev)},
-            {reply, ok, find_new_active(S)}
-    end;
+    lager:error("Active link to ~p failed with error ~p.~n",
+                [Sender, Reason]),
+    S = S0#st{activev=lists:keydelete(Sender, #peer.id, S0#st.activev)},
+    {noreply, find_new_active(S)};
 
 %% Return current active peers
 handle_call(get_peers, _, S) ->
@@ -318,21 +287,6 @@ handle_call(get_peers, _, S) ->
 %% Return current passive peers
 handle_call(get_passive_peers, _, S) ->
     {reply, S#st.passivev, S};
-
-%% Start sending notifications to a process
-handle_call(notify_me, {Pid, _}, S) when S#st.notify =:= undefined->
-    MRef = erlang:monitor(process, Pid),
-    Active = [{P#peer.id, P#peer.conn} || P <- S#st.activev],
-    {reply, Active, S#st{notify={Pid, MRef}}};
-handle_call(notify_me, _, S) ->
-    {reply, {error, already_notifying}, S};
-
-%% Stop notifying a process
-handle_call(stop_notifying, {Pid, _}, S=#st{notify={Pid,MRef}}) ->
-    erlang:unmonitor(MRef, [flush]),
-    {reply, ok, S#st{notify=undefined}};
-handle_call(stop_notifying, _, S) ->
-    {reply, {error, not_notifying}, S};
 
 %% Stop the hypar_node
 handle_call(stop, _, S) ->
@@ -506,8 +460,6 @@ add_node_active(Peer, S0) ->
                     true  -> drop_random_active(S0);
                     false -> S0
                 end,
-            %% Notify link change
-            neighbour_up(S#st.notify, Id, Peer#peer.conn),
             S#st{activev=[Peer|S#st.activev]};
         false ->
             S0
@@ -526,7 +478,7 @@ drop_random_active(S) ->
     PassiveV = [Peer#peer.id|misc:drop_n_random(Slots, PassiveV0)],
 
     connect:disconnect(Peer#peer.conn),
-    neighbour_down(S#st.notify, Peer#peer.id),
+    
     S#st{activev=ActiveV, passivev=PassiveV}.
 
 -spec find_new_active(S :: #st{}) -> #st{}.

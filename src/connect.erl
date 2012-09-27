@@ -73,13 +73,13 @@
 %% Record 
 -record(conn, {local,
                remote,
-               receiver,
+               target,
                send_timeout,
                timeout,
                socket,
                data
               }).
-              
+
 %%%===================================================================
 %%% API
 %%%===================================================================
@@ -159,8 +159,52 @@ init([LPid, Socket, Options]) ->
 init([Options]) ->
     {ok, wait_outgoing, initial_state(Options)}.
 
+%% @doc Active state
+%%      Four possibilities; Either it is a binary message, a forward-join,
+%%      a shuffle or a disconnect.
+active({message, Bin}, C) ->
+    Len = byte_size(Bin),
+    try_send(C, <<?MESSAGE, Len:32/integer, Bin/binary>>);
+active({forward_join, Req, TTL}, C) ->
+    BReq = encode_id(Req),
+    try_send(C, <<?FORWARDJOIN, BReq:6/binary, TTL/integer>>);
+active({shuffle, Req, SId, TTL, XList}, C) ->
+    Len = length(XList),
+    BReq = encode_id(Req),
+    BXList = encode_xlist(XList),
+    Bin = <<?SHUFFLE, BReq:6/binary, SId/integer, TTL/integer,  Len/integer,
+            BXList/binary>>,
+    try_send(C, Bin);
+active(timeout, C) ->
+    link_up(C#conn.target, C#conn.remote, self()),
+    {next_state, active, C}.
+
+active(disconnect, _, C) ->
+    link_down(C#conn.target, C#conn.remote),
+    gen_tcp:send(C#conn.socket, <<?DISCONNECT>>),
+    {next_state, temporary, ok, C}.
+
+%% Receive socket data
+handle_info({tcp, Socket, Data}, active, C) ->
+    inet:setopts(Socket, [{active, once}]),
+    RestBin = C#conn.data,
+    parse_packets(C, <<RestBin/binary, Data/binary>>);
+handle_info({tcp_closed, _}, active, C) ->
+    link_down(C#conn.target, C#conn.remote),
+    hypar_node:error(C#conn.remote, tcp_closed),
+    {stop, normal, C};
+handle_info({tcp_closed, _}, temporary, C) ->
+    {stop, normal, C};
+handle_info({tcp_error, _, Reason}, active, C) ->
+    link_down(C#conn.target, C#conn.remote),
+    hypar_node:error(C#conn.remote, Reason),
+    {stop, normal, C};
+handle_info({tcp_error, _, _}, temporary, C) ->
+    {stop, normal, C}.
+
+
 %%%===================================================================
-%%% Related to initialization of outgoing connections
+%%% Outgoing connections
 %%%===================================================================
 
 %% Start a connection and send a join
@@ -183,7 +227,7 @@ wait_outgoing({neighbour, To, Priority}, Ref, C0) ->
             end,
     {_, Port} = C0#conn.local,
     C = C0#conn{remote=To},
-    Bin = <<NType, Port:16/integer>>,
+    Bin = <<NType/integer, Port:16/integer>>,
 
     case start_conn(C) of
         {ok, Socket} ->
@@ -215,7 +259,7 @@ wait_outgoing({shuffle_reply, To, SId, XList}, C0) ->
 neighbour_reply(timeout, {Ref, C=#conn{socket=S}}) ->
     case gen_tcp:recv(S, 1, C#conn.timeout) of
         {ok, <<?ACCEPT>>}  -> gen_fsm:reply(Ref, accept),
-                              {next_state, active, C};
+                              {next_state, active, C, 0};
         {ok, <<?DECLINE>>} -> gen_fsm:reply(Ref, decline),
                               gen_tcp:close(S),
                               {stop, normal, C};
@@ -237,6 +281,7 @@ wait_incoming(timeout, C0) ->
     inet:setopts(Socket, [{nodelay, true}, {send_timeout, C0#conn.send_timeout}]),
     {ok, {RemoteIP, _}} = inet:sockname(Socket),
     C = C0#conn{remote={RemoteIP,undefined}},
+    %% Read 3 bytes to determine what kind of message it is
     case gen_tcp:recv(Socket, 3 ,C#conn.timeout) of
         {ok, Bin} ->
             case Bin of
@@ -250,47 +295,10 @@ wait_incoming(timeout, C0) ->
         {error, Err} -> {stop, {error, Err}, C}
     end.
 
-%% @doc Active state
-%%      Four possibilities; Either it is a binary message, a forward-join,
-%%      a shuffle or a disconnect.
-active({message, Bin}, C) ->
-    Len = byte_size(Bin),
-    try_send(C, <<?MESSAGE, Len:32/integer, Bin/binary>>);
-active({forward_join, Req, TTL}, C) ->
-    BReq = encode_id(Req),
-    try_send(C, <<?FORWARDJOIN, BReq:6/binary, TTL/integer>>);
-active({shuffle, Req, SId, TTL, XList}, C) ->
-    Len = length(XList),
-    BReq = encode_id(Req),
-    BXList = encode_xlist(XList),
-    Bin = <<?SHUFFLE, BReq:6/binary, SId/integer, TTL/integer,  Len/integer,
-            BXList/binary>>,
-    try_send(C, Bin).
-
-active(disconnect, _, C) ->
-    gen_tcp:send(C#conn.socket, <<?DISCONNECT>>),
-    {next_state, temporary, ok, C}.
-
 %% Wait for the go-ahead from the ranch server
 wait_for_socket(timeout, {LPid, C}) ->
     ok = ranch:accept_ack(LPid),
     {next_state, wait_incoming, C, 0}.
-
-%% Receive socket data
-handle_info({tcp, Socket, Data}, active, C) ->
-    inet:setopts(Socket, [{active, once}]),
-    RestBin = C#conn.data,
-    parse_packets(C, <<RestBin/binary, Data/binary>>);
-handle_info({tcp_closed, _}, active, C) ->
-    hypar_node:error(C#conn.remote, tcp_closed),
-    {stop, {error, tcp_closed}, C};
-handle_info({tcp_closed, _}, temporary, C) ->
-    {stop, normal, C};
-handle_info({tcp_error, _, Reason}, active, C) ->
-    hypar_node:error(C#conn.remote, Reason),
-    {stop, {error, Reason}, C};
-handle_info({tcp_error, _, _}, temporary, C) ->
-    {stop, normal, C}.
 
 %%%===================================================================
 %%% Not used
@@ -312,16 +320,26 @@ terminate(_, _, _) ->
 %%% Internal functions
 %%%===================================================================
 
+%% @doc Notify <em>Target</em> of a <b>link_up</b> event to node <em>To</em>.
+link_up(Target, To, Conn) ->
+    lager:info("Link up: ~p~n", [{To, Conn}]),
+    gen_server:cast(Target, {link_up, To, Conn}).
+
+%% @doc Notify <em>Target</em> of a <b>link_down</b> event to node <em>To</em>
+link_down(Target, To) ->
+    lager:info("Link down: ~p~n", [To]), 
+    gen_server:cast(Target, {link_down, To}).
+
 %% @doc Deliver a message <em>Bin</em> to <em>Receiver</em> from connection
 %%      <em>Id</em>.
-deliver(Receiver, Id, Bin) ->
-    gen_server:cast(Receiver, {message, Id, Bin}).
+deliver(Target, Id, Bin) ->
+    gen_server:cast(Target, {message, Id, Bin}).
 
 %% @doc Parse the incoming stream of bytes in the active state.
 parse_packets(C, <<?MESSAGE, Len:32/integer, Rest0/binary>>)
   when byte_size(Rest0) >= Len -> 
     <<Msg:Len/binary, Rest/binary>> = Rest0,
-    deliver(C#conn.receiver, C#conn.remote, Msg),
+    deliver(C#conn.target, C#conn.remote, Msg),
     parse_packets(C, Rest);
 parse_packets(C, <<?FORWARDJOIN, BReq:6/binary, TTL/integer, Rest0/binary>>) ->
     hypar_node:forward_join(C#conn.remote, decode_id(BReq), TTL),
@@ -368,7 +386,7 @@ accept_neighbour(C) ->
     Socket = C#conn.socket,
     case gen_tcp:send(Socket, <<?ACCEPT>>) of
         ok           -> inet:setopts(Socket, [{active, once}]),
-                        {next_state, active, C};
+                        {next_state, active, C, 0};
         {error, Err} -> hypar_node:error(C#conn.remote, Err),
                         {stop, {error, Err}, C}
     end.
@@ -404,7 +422,7 @@ try_connect_send(C0, Bin) ->
         {ok, Socket} ->
             case gen_tcp:send(Socket, Bin) of                                
                 ok  -> inet:setopts(Socket, [{active, true}]),
-                       {reply, ok, active, C0#conn{socket=Socket}};
+                       {reply, ok, active, C0#conn{socket=Socket}, 0};
                 Err -> {stop, Err, Err, Socket}
             end;
         Err -> {stop, Err, Err, C0}
@@ -435,7 +453,7 @@ handle(F, C0, Port) ->
     Id = {RemoteIP, Port},
     ok = hypar_node:F(Id),
     inet:setopts(C0#conn.socket, [{active, once}]),
-    {next_state, active, C0#conn{remote=Id}}.
+    {next_state, active, C0#conn{remote=Id}, 0}.
 
 %% @doc Parse an XList
 parse_xlist(<<>>) -> [];
@@ -461,14 +479,14 @@ decode_id(<<A/integer, B/integer, C/integer, D/integer, Port:16/integer>>) ->
     {{A, B, C, D}, Port}.
 
 filter_opts(Options) ->
-    Valid = [id, receiver, timeout, send_timeout],
+    Valid = [id, target, timeout, send_timeout],
     lists:filter(fun({Opt,_}) -> lists:member(Opt, Valid) end, Options).                         
     
 %% @pure
 %% @doc Create the inital state from <em>Options</em>.        
 initial_state(Options) ->
     #conn{local = proplists:get_value(id, Options),
-          receiver = proplists:get_value(receiver, Options),
+          target = proplists:get_value(target, Options),
           timeout = proplists:get_value(timeout, Options),
           send_timeout = proplists:get_value(send_timeout, Options),
           data = <<>>
