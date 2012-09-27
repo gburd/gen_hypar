@@ -30,12 +30,14 @@
 %%%%%%%%%%%%%
 -include("hyparerl.hrl").
 
+
+-export([free_slots/3]).
 %%%%%%%%%%%%%
 %% Exports %%
 %%%%%%%%%%%%%
 
 %% Operations
--export([start_link/1, stop/0, join_cluster/1, shuffle/0]).
+-export([start_link/1, stop/0, join_cluster/1]).
 
 %% View related
 -export([get_peers/0, get_passive_peers/0]).
@@ -44,7 +46,7 @@
 -export([join/1, join_reply/1, neighbour/2, disconnect/1, error/2]).
 
 %% ASynchronus events
--export([forward_join/3, shuffle/5, shuffle_reply/2]).
+-export([forward_join/3, shuffle/4, shuffle_reply/1]).
 
 %% gen_server callbacks
 -export([init/1, terminate/2, code_change/3,
@@ -57,8 +59,7 @@
 -record(st, {id            :: id(),              %% This nodes identifier
              activev = []  :: active_view(),     %% The active view
              passivev = [] :: passive_view(),    %% The passive view
-             shist = []    :: shuffle_history(), %% History of shuffle requests sent
-             scount = 0    :: pos_integer(),     %% The shuffle id
+             last_xlist    :: xlist(),           %% The last shuffle xlist sent
              opts          :: options(),         %% Options
              target        :: atom()             %% Target process that receives
             }).                                  %% link events and messages
@@ -86,11 +87,6 @@ stop() ->
 %% @doc Let the <b>hypar_node</b> join a cluster via <em>ContactNode</em>.
 join_cluster(ContactNode) ->
     gen_server:call(?MODULE, {join_cluster, ContactNode}).
-
--spec shuffle() -> shuffle.
-%% @doc Force the <b>hypar_node</b> to do a shuffle operation.
-shuffle() ->
-    ?MODULE !shuffle.
 
 %%%%%%%%%%%%%%%%%%%%%
 %% Peer operations %%
@@ -136,33 +132,27 @@ neighbour(Sender, Priority) ->
 -spec disconnect(Sender :: id()) -> ok | {error, not_in_active}.
 %% @doc Disconnect <em>Sender</em>.
 disconnect(Sender) ->
-    gen_server:call(?MODULE, {disconnect, Sender}).
+    gen_server:cast(?MODULE, {disconnect, Sender}).
 
 -spec error(Sender :: id(), Reason :: any()) -> ok | {error, not_in_active}.
 %% @doc Let the <b>hypar_node</b> know that <em>Sender</em> has failed
 %%      with <em>Reason</em>.
 error(Sender, Reason) ->
-    gen_server:call(?MODULE, {error, Sender, Reason}).
+    gen_server:cast(?MODULE, {error, Sender, Reason}).
 
 -spec shuffle(Sender :: id(), Requester :: id(), XList :: xlist(),
-              TTL :: non_neg_integer(), SId :: binary()) -> ok.
+              TTL :: non_neg_integer()) -> ok.
 %% @doc Shuffle request from <em>Sender</em>. The shuffle request originated in
 %%      node <em>Requester</em> and <em>XList</em> contains sample node
-%%      identifiers. The message has a time to live of <em>TTL</em> and is
-%%      tagged by the reference <em>Ref</em>.
-shuffle(Sender, Requester, XList, TTL, SId) ->
-    gen_server:cast(?MODULE, {shuffle, Sender, Requester, XList, TTL, SId}).
+%%      identifiers. The message has a time to live of <em>TTL</em>
+shuffle(Sender, Requester, XList, TTL) ->
+    gen_server:cast(?MODULE, {shuffle, Sender, Requester, XList, TTL}).
 
--spec shuffle_reply(SId :: binary(), ReplyXList :: xlist()) -> ok.
+-spec shuffle_reply(ReplyXList :: xlist()) -> ok.
 %% @doc Shuffle reply to shuffle request with reference <em>Ref</em> sent from
 %%      <em>Sender</em> that carries the sample list <em>ReplyXList</em>.
-shuffle_reply(SId, ReplyXList) ->
-    gen_server:cast(?MODULE, {shuffle_reply,SId, ReplyXList}).
-
-%%%%%%%%%%%%
-%% Notify %%
-%%%%%%%%%%%%
-
+shuffle_reply(ReplyXList) ->
+    gen_server:cast(?MODULE, {shuffle_reply, ReplyXList}).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks %%
@@ -203,81 +193,44 @@ handle_call({join_cluster, ContactNode}, _, S0) ->
 
 %% Add newly joined node to active view, propagate forward joins
 handle_call({join, Sender}, {Pid,_}, S0) ->
-    case lists:keyfind(Sender, #peer.id, S0#st.activev) of
-        #peer{id=Sender} ->
-            {reply, {error, already_in_active}, S0};
-        false ->
-            S = add_node_active(#peer{id=Sender, conn=Pid}, S0),
-
-            %% Send forward joins
-            ARWL = proplists:get_value(arwl, S#st.opts),
-            
-            ForwardFun =
-                fun(X) ->
-                        connect:forward_join(X#peer.conn, Sender, ARWL)
-                end,
-            FilterFun  = fun(X) -> X#peer.id =/= Sender end,
-            ForwardNodes = lists:filter(FilterFun, S#st.activev),
-            
-            lists:foreach(ForwardFun, ForwardNodes),
-            
-            {reply, ok, S}
-    end;
+    S = add_node_active(#peer{id=Sender, conn=Pid}, S0),
+    
+    %% Send forward joins
+    ARWL = proplists:get_value(arwl, S#st.opts),
+    
+    ForwardFun = fun(X) -> connect:forward_join(X#peer.conn, Sender, ARWL) end,
+    FilterFun  = fun(X) -> X#peer.id =/= Sender end,
+    ForwardNodes = lists:filter(FilterFun, S#st.activev),
+    
+    lists:foreach(ForwardFun, ForwardNodes),
+    
+    {reply, ok, S};
 
 %% Accept a connection from the join procedure
 handle_call({join_reply, Sender}, {Pid,_} , S0) ->
-    case lists:keyfind(Sender, #peer.id, S0#st.activev) of
-        #peer{id=Sender} ->
-            {reply, {error, already_in_active}, S0};
-        false ->
-            {reply, ok, add_node_active(#peer{id=Sender, conn=Pid}, S0)}
-    end;
-
-%% Disconnect an open active connection, add disconnecting node to passive view
-handle_call({disconnect, Sender}, _, S0) ->
-    case lists:keyfind(Sender, #peer.id, S0#st.activev) of
-        #peer{id=Sender} ->
-            %% Disconnect the peer, close the connection and add node to passive view
-            ActiveV = lists:keydelete(Sender, #peer.id, S0#st.activev),
-            {reply, ok, add_node_passive(Sender, S0#st{activev=ActiveV})};
-        false ->
-            {reply, {error, not_in_active}, S0}
-    end;
+    {reply, ok, add_node_active(#peer{id=Sender, conn=Pid}, S0)};
 
 %% Neighbour request, either accept or decline based on priority and current
 %% active view
 handle_call({neighbour, Sender, Priority},{Pid,_} , S) ->
-    case lists:keyfind(Sender, #peer.id, S#st.activev) of
-        #peer{id=Sender} ->
-            {reply, {error, already_in_active}, S};
-        false ->
-            P = #peer{id=Sender, conn=Pid},
-            case Priority of
-                %% High priority neighbour request thus the node needs to accept
-                %% the request what ever the current active view is
-                high ->
-                    lager:info("Neighbour accepted: ~p.~n", [P]),
-                    {reply, accept, add_node_active(P, S)};
-                %% Low priority request, only accept if we have space in the
-                %% nodes active view
-                low ->
-                    ASize = proplists:get_value(active_size, S#st.opts),
-                    case length(S#st.activev) < ASize of
-                        true ->
-                            {reply, accept, add_node_active(P, S)};
-                        false ->
-                            lager:info("Neighbour declined ~p.~n", [P]),
-                            {reply, decline, S}
-                    end
+    false = lists:keyfind(Sender, #peer.id, S#st.activev),
+    P = #peer{id=Sender, conn=Pid},
+    case Priority of
+        %% High priority neighbour request thus the node needs to accept
+        %% the request what ever the current active view is
+        high ->
+            lager:info("Neighbour accepted: ~p.~n", [P]),
+            {reply, accept, add_node_active(P, S)};
+        %% Low priority request, only accept if we have space in the
+        %% nodes active view
+        low ->
+            ASize = proplists:get_value(active_size, S#st.opts),
+            case length(S#st.activev) < ASize of
+                true  -> {reply, accept, add_node_active(P, S)};
+                false -> lager:info("Neighbour declined ~p.~n", [P]),
+                         {reply, decline, S}
             end
     end;
-
-%% Handle failing connections. Try to find a new one if possible
-handle_call({error, Sender, Reason}, _, S0) ->
-    lager:error("Active link to ~p failed with error ~p.~n",
-                [Sender, Reason]),
-    S = S0#st{activev=lists:keydelete(Sender, #peer.id, S0#st.activev)},
-    {noreply, find_new_active(S)};
 
 %% Return current active peers
 handle_call(get_peers, _, S) ->
@@ -298,13 +251,13 @@ handle_call(stop, _, S) ->
 handle_cast({forward_join, Sender, NewNode, TTL}, S0) ->
     case TTL =:= 0 orelse length(S0#st.activev) =:= 1 of
         true ->
-            %% Add to active view, send a reply to the forward_join to let the
+            %% Add to active view, send a reply to the join_reply to let the
             %% other node know
             case connect:join_reply(NewNode) of
                 {error, Err} ->
                     lager:error("Join reply error ~p to ~p.~n", [Err, NewNode]),
                     {noreply, S0};
-                P -> 
+                P ->
                     {noreply, add_node_active(P, S0)}
             end;
         false ->
@@ -327,62 +280,65 @@ handle_cast({forward_join, Sender, NewNode, TTL}, S0) ->
 %% temporary connection to the source of the request. If the node accept then
 %% it adds the shuffle list into it's passive view and responds with with
 %% a shuffle reply
-handle_cast({shuffle, Sender, Req, SId, TTL, XList}, S0) ->
+handle_cast({shuffle, Sender, Req, TTL, XList}, S0) ->
     case TTL > 0 andalso length(S0#st.activev) > 1 of
         %% Propagate the random walk
         true ->
             AllButSender = lists:keydelete(Sender, #peer.id, S0#st.activev),
             P = misc:random_elem(AllButSender),
-            connect:shuffle(P#peer.conn, Req, SId, TTL-1, XList),
+            connect:shuffle(P#peer.conn, Req, TTL-1, XList),
             {noreply, S0};
         %% Accept the shuffle request, add to passive view and reply
         false ->
             ReplyXList = misc:take_n_random(length(XList), S0#st.passivev),
-            connect:shuffle_reply(Req, SId, ReplyXList),
+            connect:shuffle_reply(Req, ReplyXList),
             {noreply, add_xlist(S0, XList, ReplyXList)}
     end;
 
 %% Accept a shuffle reply, add the reply list into the passive view and
 %% close the temporary connection.
-handle_cast({shuffle_reply, SId, ReplyXList}, S0) ->
-    SHist0 = S0#st.shist,
-    case lists:keyfind(SId, 1, SHist0) of
-        %% Clean up the shuffle history, add the reply list to passive view
-        {SId, XList, _} ->
-            SHist = lists:keydelete(SId, 1, SHist0),
-            {noreply, add_xlist(S0#st{shist=SHist}, ReplyXList, XList)};
-        %% Stale data or something buggy
+handle_cast({shuffle_reply, ReplyXList}, S0) ->
+    S = S0#st{last_xlist=[]},
+    {noreply, add_xlist(S, ReplyXList, S0#st.last_xlist)};
+
+%% Disconnect an open active connection, add disconnecting node to passive view
+handle_cast({disconnect, Sender}, S0) ->
+    case lists:keyfind(Sender, #peer.id, S0#st.activev) of
+        #peer{id=Sender} ->
+            %% Disconnect the peer, close the connection and add node to passive view
+            ActiveV = lists:keydelete(Sender, #peer.id, S0#st.activev),
+            {noreply, add_node_passive(Sender, S0#st{activev=ActiveV})};
         false ->
-            lager:info("Stale shuffle reply with id, ignoring.~n", [SId]),
-            {noreply, S0}
-    end.
+            {noreply, {error, not_in_active}, S0}
+    end;
+
+%% Handle failing connections. Try to find a new one if possible
+handle_cast({error, Sender, Reason}, S0) ->
+    lager:error("Active link to ~p failed with error ~p.~n",
+                [Sender, Reason]),
+    S = S0#st{activev=lists:keydelete(Sender, #peer.id, S0#st.activev)},
+    {noreply, find_new_active(S)}.
 
 %% Timer message for periodic shuffle. Send of a shuffle request to a random
 %% peer in the active view. Ignore if we don't have any active connections.
 handle_info(shuffle, S) ->
-    Opts = S#st.opts,
-    case S#st.activev =:= [] of
-        true ->
-            SHist0 = S#st.shist;
-        false ->
-            XList = create_xlist(S),
-            P = misc:random_elem(S#st.activev),
-
-            ARWL = proplists:get_value(arwl, Opts),
-            Now = erlang:now(),
-            SId = S#st.scount,
-            New = {SId, XList, Now},
-            connect:shuffle(P#peer.conn, S#st.id, SId, ARWL-1, XList),
-            SHist0 = [New|S#st.shist]
+    LastXList = 
+        case S#st.activev =:= [] of
+            true -> [];
+            false ->
+                XList = create_xlist(S),
+                P = misc:random_elem(S#st.activev),
+                
+                ARWL = proplists:get_value(arwl, S#st.opts),
+                
+                connect:shuffle(P#peer.conn, S#st.id, ARWL-1, XList),
+                XList
         end,
-
-    ShufflePeriod = proplists:get_value(shuffle_period, Opts),
+    
+    ShufflePeriod = proplists:get_value(shuffle_period, S#st.opts),
     shuffle_timer(ShufflePeriod),
 
-    %% Cleanup shuffle history
-    BufferSize = proplists:get_value(shuffle_buffer, Opts),
-    SHist = clear_shist(BufferSize, SHist0),
-    {noreply, S#st{scount=(S#st.scount+1) rem 256, shist=SHist}}.
+    {noreply, S#st{last_xlist=LastXList}}.
 
 code_change(_, S, _) ->
     {ok, S}.
@@ -416,12 +372,10 @@ shuffle_timer(ShufflePeriod) ->
 %%      elements.
 add_xlist(S, XList0, ReplyList) ->
     PassiveSize = proplists:get_value(passive_size, S#st.opts),
+    ActiveV = S#st.activev,
     PassiveV0 = S#st.passivev,
-    Filter = fun(Node) ->
-                     Node =/= S#st.id andalso
-                         not lists:keymember(Node, #peer.id, S#st.activev) andalso
-                         not lists:member(Node, PassiveV0)
-             end,
+    Id = S#st.id,
+    Filter = fun(Node) -> node_ok(Node, Id, ActiveV, PassiveV0) end,
     XList = lists:filter(Filter, XList0),
     PassiveV = free_slots(length(PassiveV0)-PassiveSize+length(XList),
                           PassiveV0, ReplyList),
@@ -444,6 +398,11 @@ create_xlist(S) ->
 %% Active view related %%
 %%%%%%%%%%%%%%%%%%%%%%%%%
 
+%% @doc Notify <em>Target</em> of a <b>link_up</b> event to node <em>To</em>.
+link_up(Target, To, Conn) ->
+    lager:info("Link up: ~p~n", [{To, Conn}]),
+    gen_server:cast(Target, {link_up, To, Conn}).
+
 -spec add_node_active(Peer :: #peer{}, S0 :: #st{}) -> #st{}.
 %% @private
 %% @doc Add <em>Peer</em> to the active view in state <em>S0</em>, removing a
@@ -460,7 +419,10 @@ add_node_active(Peer, S0) ->
                     true  -> drop_random_active(S0);
                     false -> S0
                 end,
-            S#st{activev=[Peer|S#st.activev]};
+            link_up(S#st.target, Id, Peer#peer.conn),
+            S#st{activev=[Peer|S#st.activev],
+                 %% Make sure peer are not in both view.
+                 passivev=lists:delete(Peer#peer.id, S#st.passivev)};
         false ->
             S0
     end.
@@ -489,9 +451,9 @@ find_new_active(S) ->
     Priority = get_priority(S#st.activev),
 
     case find_neighbour(Priority, S#st.passivev) of
-        {no_valid, Passive} ->
+        {no_valid, PassiveV} ->
             lager:info("No accepting peers in passive view.~n"),
-            S#st{passivev=Passive};
+            S#st{passivev=PassiveV};
         {Peer, PassiveV} ->
             add_node_active(Peer, S#st{passivev=PassiveV})
     end.
@@ -519,12 +481,8 @@ find_neighbour(Priority, PassiveV0, Tried) ->
         {error, Err} ->
             lager:error("Neighbour error ~p to ~p.~n", [Err, Node]),
             find_neighbour(Priority, Passive, Tried);
-        decline ->
-            lager:info("Peer ~p declined neighbour request.~n", [Node]),
-            find_neighbour(Priority, Passive, [Node|Tried]);
-        P  ->
-            lager:info("Peer ~p accepted neighbour request.~n", [P]),
-            {P,Passive ++ Tried}
+        decline -> find_neighbour(Priority, Passive, [Node|Tried]);
+        P  -> {P,Passive ++ Tried}
     end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -536,10 +494,10 @@ find_neighbour(Priority, PassiveV0, Tried) ->
 %% @doc Add <em>Node</em> to the passive view in state <em>S</em>, removing
 %%      random entries if needed.
 add_node_passive(Node, S) ->
+    ActiveV = S#st.activev,
     PassiveV0 = S#st.passivev,
-    case Node =/= S#st.id andalso
-        not lists:keymember(Node, #peer.id, S#st.activev) andalso
-        not lists:member(Node, PassiveV0) of
+    Id = S#st.id,
+    case node_ok(Node, Id, ActiveV, PassiveV0) of
         true ->
             PSize = proplists:get_value(passive_size, S#st.opts),
             Slots = length(PassiveV0)-PSize+1,
@@ -550,28 +508,13 @@ add_node_passive(Node, S) ->
             S
     end.
 
+node_ok(Node, Id, ActiveV, PassiveV) ->
+    Node =/= Id andalso not lists:keymember(Node, #peer.id, ActiveV) andalso
+        not lists:member(Node, PassiveV).
+
 %%%%%%%%%%%%%%%
 %% Pure code %%
 %%%%%%%%%%%%%%%
-
--spec clear_shist(BSize :: non_neg_integer(), SHist :: shuffle_history()) ->
-                         shuffle_history().
-%% @pure
-%% @private
-%% @doc Clean-up old shuffle entries in <em>SHist</em> if the buffer contains
-%%      more than <em>BSize</em> entries.
-clear_shist(BSize, SHist) ->
-    case length(SHist) >= BSize of
-        true -> drop_oldest(SHist);
-        false -> SHist
-    end.
-
--spec drop_oldest(SHist :: shuffle_history()) -> shuffle_history().
-%% @pure
-%% @private
-%% @doc Drop the oldest shuffle entry from <em>SHist</em>.
-drop_oldest(SHist) ->
-    tl(lists:usort(fun({_,_,T1}, {_,_,T2}) -> T1 < T2 end, SHist)).
 
 -spec get_priority(list(#peer{})) -> priority().
 %% @pure

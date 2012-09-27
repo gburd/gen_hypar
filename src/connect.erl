@@ -26,9 +26,10 @@
 %%      ==Disconnect==
 %%      <<?DISCONNECT>>
 %%      ==Shuffle==
-%%      <<?SHUFFLE, BReq:6/binary, SId/integer, TTL/integer, Len/integer, XList/binary>>
+%%      <<?SHUFFLE, BReq:6/binary, TTL/integer, Len/integer, XList/binary>>
 %%      ==Shuffle reply==
-%%      <<?SHUFFLEREPLY, SId/integer, Len/integer, XList/binary>>
+%%      Len is 16 bits for convinience
+%%      <<?SHUFFLEREPLY, Len:16/integer, XList/binary>>
 %%
 %% @todo
 %%      Because of the format of the protocol some configuration parameters
@@ -57,7 +58,7 @@
 
 %% Incoming events to start, stop and interact with connections to remote peers
 -export([join/1, forward_join/3, join_reply/1, neighbour/2, disconnect/1,
-         shuffle/5, shuffle_reply/3]).
+         shuffle/4, shuffle_reply/2]).
 
 %% gen_fsm callbacks
 -export([init/1, handle_event/3, handle_sync_event/4, handle_info/3,
@@ -65,7 +66,7 @@
 
 %% States
 -export([wait_incoming/2, wait_outgoing/2, wait_outgoing/3, active/2, active/3,
-         neighbour_reply/2, wait_for_socket/2]).
+         wait_for_neighbour_reply/1, wait_for_socket/2]).
 
 -include("hyparerl.hrl").
 -include("connect.hrl").
@@ -123,21 +124,22 @@ join_reply(To) ->
 neighbour(To, Priority) ->
     {ok, Conn} = supervisor:start_child(connect_sup, []),
     case gen_fsm:sync_send_event(Conn, {neighbour, To, Priority}) of
-        accept -> #peer{id=To, conn=Conn};
-        DeclineOrError -> DeclineOrError
+        accept  -> #peer{id=To, conn=Conn};
+        decline -> decline;
+        {error, Err} -> {error, Err}                      
     end.
 
 %% @doc Send a shuffle request to an active connection <em>Conn</em>. The
 %%      source node is <em>Req</em> with id <em>SId</em>, time to live
 %%      <em>TTL</em> and exchange list <em>XList</em>.
-shuffle(Conn, Req, SId, TTL, XList) ->
-    gen_fsm:send_event(Conn, {shuffle, Req, SId, TTL, XList}).
+shuffle(Conn, Req, TTL, XList) ->
+    gen_fsm:send_event(Conn, {shuffle, Req, TTL, XList}).
 
 %% @doc Send a shuffle reply to <em>To</em> in shuffle reply with id
 %%      <em>SId</em> carrying the reply list <em>XList</em>.
-shuffle_reply(To, SId, XList) ->
+shuffle_reply(To, XList) ->
     {ok, Conn}  = supervisor:start_child(connect_sup, []),
-    gen_fsm:send_event(Conn, {shuffle_reply, To, SId, XList}).
+    gen_fsm:send_event(Conn, {shuffle_reply, To, XList}).
 
 %% @doc Disconnect an active connection <em>Conn</em>.
 disconnect(Conn) -> gen_fsm:sync_send_event(Conn, disconnect).
@@ -168,21 +170,17 @@ active({message, Bin}, C) ->
 active({forward_join, Req, TTL}, C) ->
     BReq = encode_id(Req),
     try_send(C, <<?FORWARDJOIN, BReq:6/binary, TTL/integer>>);
-active({shuffle, Req, SId, TTL, XList}, C) ->
+active({shuffle, Req, TTL, XList}, C) ->
     Len = length(XList),
     BReq = encode_id(Req),
     BXList = encode_xlist(XList),
-    Bin = <<?SHUFFLE, BReq:6/binary, SId/integer, TTL/integer,  Len/integer,
-            BXList/binary>>,
-    try_send(C, Bin);
-active(timeout, C) ->
-    link_up(C#conn.target, C#conn.remote, self()),
-    {next_state, active, C}.
+    Bin = <<?SHUFFLE, BReq:6/binary, TTL/integer, Len/integer, BXList/binary>>,
+    try_send(C, Bin).
 
 active(disconnect, _, C) ->
     link_down(C#conn.target, C#conn.remote),
     gen_tcp:send(C#conn.socket, <<?DISCONNECT>>),
-    {next_state, temporary, ok, C}.
+    {reply, ok, temporary, C}.
 
 %% Receive socket data
 handle_info({tcp, Socket, Data}, active, C) ->
@@ -220,34 +218,31 @@ wait_outgoing({join_reply, To}, _, C) ->
     try_connect_send(C#conn{remote=To}, Bin);
 
 %% Start a connection and send a neighbour request then wait for a response
-wait_outgoing({neighbour, To, Priority}, Ref, C0) ->
-    NType = case Priority of
-                high -> <<?HNEIGHBOUR>>;
-                low  -> <<?LNEIGHBOUR>>
-            end,
+wait_outgoing({neighbour, To, Priority}, _, C0) ->
     {_, Port} = C0#conn.local,
     C = C0#conn{remote=To},
-    Bin = <<NType/integer, Port:16/integer>>,
+    Bin = case Priority of
+              high -> <<?HNEIGHBOUR, Port:16/integer>>;
+              low  -> <<?LNEIGHBOUR, Port:16/integer>>
+          end,
 
     case start_conn(C) of
         {ok, Socket} ->
             case gen_tcp:send(Socket, Bin) of
-                ok ->
-                    {next_state, neighbour_reply,
-                     {Ref, C#conn{socket=Socket}}, 0};
+                ok  -> wait_for_neighbour_reply(C#conn{socket=Socket});
                 Err -> {stop, Err, Err, C}
             end;
         Err -> {stop, Err, Err, C}
     end.                                        
 
 %% Start a temporary connection and send a shuffle reply
-wait_outgoing({shuffle_reply, To, SId, XList}, C0) ->
+wait_outgoing({shuffle_reply, To, XList}, C0) ->
     C = C0#conn{remote=To},
     case start_conn(C) of
         {ok, Socket} ->
             Len = length(XList),
             BXList = encode_xlist(XList),
-            Bin = <<?SHUFFLEREPLY, SId/integer, Len/integer, BXList/binary>>,
+            Bin = <<?SHUFFLEREPLY, Len:16/integer, BXList/binary>>,
             case gen_tcp:send(Socket, Bin) of
                 ok ->  {next_state, temporary, Socket};
                 Err -> {stop, Err, C}
@@ -256,15 +251,11 @@ wait_outgoing({shuffle_reply, To, SId, XList}, C0) ->
     end.
 
 %% Wait for a reply on a neighbour request
-neighbour_reply(timeout, {Ref, C=#conn{socket=S}}) ->
-    case gen_tcp:recv(S, 1, C#conn.timeout) of
-        {ok, <<?ACCEPT>>}  -> gen_fsm:reply(Ref, accept),
-                              {next_state, active, C, 0};
-        {ok, <<?DECLINE>>} -> gen_fsm:reply(Ref, decline),
-                              gen_tcp:close(S),
-                              {stop, normal, C};
-        Err                -> gen_fsm:reply(Ref, Err),
-                              {stop, Err, C}
+wait_for_neighbour_reply(C=#conn{socket=Socket}) ->
+    case gen_tcp:recv(Socket, 1, C#conn.timeout) of
+        {ok, <<?ACCEPT>>}  -> {reply, accept, active, C};
+        {ok, <<?DECLINE>>} -> {stop, normal, decline, C};
+        Err                -> {stop, normal, Err, C}
     end.
 
 %%%===================================================================
@@ -289,8 +280,7 @@ wait_incoming(timeout, C0) ->
                 <<?JOINREPLY, Port:16/integer>>  -> handle_join_reply(C, Port);
                 <<?LNEIGHBOUR, Port:16/integer>> -> handle_neighbour(C, Port, low);
                 <<?HNEIGHBOUR, Port:16/integer>> -> handle_neighbour(C, Port, high);
-                <<?SHUFFLEREPLY, SId/integer, Len/integer>> ->
-                    handle_shuffle_reply(C, SId, Len)
+                <<?SHUFFLEREPLY, Len:16/integer>>      -> handle_shuffle_reply(C, Len)
             end;
         {error, Err} -> {stop, {error, Err}, C}
     end.
@@ -320,11 +310,6 @@ terminate(_, _, _) ->
 %%% Internal functions
 %%%===================================================================
 
-%% @doc Notify <em>Target</em> of a <b>link_up</b> event to node <em>To</em>.
-link_up(Target, To, Conn) ->
-    lager:info("Link up: ~p~n", [{To, Conn}]),
-    gen_server:cast(Target, {link_up, To, Conn}).
-
 %% @doc Notify <em>Target</em> of a <b>link_down</b> event to node <em>To</em>
 link_down(Target, To) ->
     lager:info("Link down: ~p~n", [To]), 
@@ -344,15 +329,16 @@ parse_packets(C, <<?MESSAGE, Len:32/integer, Rest0/binary>>)
 parse_packets(C, <<?FORWARDJOIN, BReq:6/binary, TTL/integer, Rest0/binary>>) ->
     hypar_node:forward_join(C#conn.remote, decode_id(BReq), TTL),
     parse_packets(C, Rest0);
-parse_packets(C, <<?SHUFFLE, BReq:6/binary, SId/integer, TTL/integer,
-                   Len/integer, Rest0/binary>>)
+parse_packets(C, <<?SHUFFLE, BReq:6/binary, TTL/integer, Len/integer,
+                   Rest0/binary>>)
   when byte_size(Rest0) >= Len*6 ->
     XListLen = Len*6,
     <<BinXList:XListLen/binary, Rest/binary>> = Rest0,
     XList = parse_xlist(BinXList),
-    hypar_node:shuffle(C#conn.remote, decode_id(BReq), SId, TTL, XList),
+    hypar_node:shuffle(C#conn.remote, decode_id(BReq), TTL, XList),
     parse_packets(C, Rest);
-parse_packets(C, <<?DISCONNECT, _/binary>>) ->
+parse_packets(C, <<?DISCONNECT>>) ->
+    link_down(C#conn.target, C#conn.remote),
     hypar_node:disconnect(C#conn.remote),
     gen_tcp:close(C#conn.socket),
     {stop, normal, C};
@@ -386,7 +372,7 @@ accept_neighbour(C) ->
     Socket = C#conn.socket,
     case gen_tcp:send(Socket, <<?ACCEPT>>) of
         ok           -> inet:setopts(Socket, [{active, once}]),
-                        {next_state, active, C, 0};
+                        {next_state, active, C};
         {error, Err} -> hypar_node:error(C#conn.remote, Err),
                         {stop, {error, Err}, C}
     end.
@@ -401,14 +387,14 @@ decline_neighbour(C) ->
 
 %% @doc Receive the exchange list of length <em>Len</em>  for shuffle with id
 %%      <em>SId</em> for the shuffle reply.
-handle_shuffle_reply(C, SId, 0) ->
-    hypar_node:shuffle_reply(SId, []),
+handle_shuffle_reply(C, 0) ->
+    hypar_node:shuffle_reply([]),
     gen_tcp:close(C#conn.socket),
     {stop, normal, C};
-handle_shuffle_reply(C, SId, Len) ->
+handle_shuffle_reply(C, Len) ->
     Socket = C#conn.socket,
     case gen_tcp:recv(Socket, Len*6, C#conn.timeout) of
-        {ok, Bin} -> hypar_node:shuffle_reply(SId, parse_xlist(Bin)),
+        {ok, Bin} -> hypar_node:shuffle_reply(parse_xlist(Bin)),
                      gen_tcp:close(Socket),
                      {stop, normal, C};
         Err        -> {stop, Err, C}
@@ -422,7 +408,7 @@ try_connect_send(C0, Bin) ->
         {ok, Socket} ->
             case gen_tcp:send(Socket, Bin) of                                
                 ok  -> inet:setopts(Socket, [{active, true}]),
-                       {reply, ok, active, C0#conn{socket=Socket}, 0};
+                       {reply, ok, active, C0#conn{socket=Socket}};
                 Err -> {stop, Err, Err, Socket}
             end;
         Err -> {stop, Err, Err, C0}
@@ -453,7 +439,7 @@ handle(F, C0, Port) ->
     Id = {RemoteIP, Port},
     ok = hypar_node:F(Id),
     inet:setopts(C0#conn.socket, [{active, once}]),
-    {next_state, active, C0#conn{remote=Id}, 0}.
+    {next_state, active, C0#conn{remote=Id}}.
 
 %% @doc Parse an XList
 parse_xlist(<<>>) -> [];
