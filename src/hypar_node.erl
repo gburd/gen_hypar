@@ -213,7 +213,6 @@ handle_call({join_reply, Sender}, {Pid,_} , S0) ->
 %% Neighbour request, either accept or decline based on priority and current
 %% active view
 handle_call({neighbour, Sender, Priority},{Pid,_} , S) ->
-    false = lists:keyfind(Sender, #peer.id, S#st.activev),
     P = #peer{id=Sender, conn=Pid},
     case Priority of
         %% High priority neighbour request thus the node needs to accept

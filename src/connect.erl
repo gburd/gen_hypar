@@ -1,5 +1,5 @@
 %% @private
-%% @doc A connection layer on top of TCP for the use in hyparerl
+%% @doc Module that takes care of connections in the hyparerl application
 %%
 %%      =Binary formats=
 %%      All messages sent as first contact(join, forward_join_reply, neighbour
@@ -101,7 +101,7 @@ send(Conn, Bin) -> gen_fsm:send_event(Conn, {message, Bin}).
 %% @doc Create a tcp-connection to <em>To</em>. Send a join message and put this
 %%      connection in active state.
 join(To) ->
-    {ok, Conn} = supervisor:start_child(connect_sup, []),
+    {ok, Conn} case supervisor:start_child(connect_sup, []),
     case gen_fsm:sync_send_event(Conn, {join, To}) of
         ok ->  #peer{id=To, conn=Conn};
         Err -> Err
@@ -125,8 +125,7 @@ neighbour(To, Priority) ->
     {ok, Conn} = supervisor:start_child(connect_sup, []),
     case gen_fsm:sync_send_event(Conn, {neighbour, To, Priority}) of
         accept  -> #peer{id=To, conn=Conn};
-        decline -> decline;
-        {error, Err} -> {error, Err}                      
+        DeclineOrErr -> DeclineOrErr
     end.
 
 %% @doc Send a shuffle request to an active connection <em>Conn</em>. The
