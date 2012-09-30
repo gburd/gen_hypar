@@ -30,23 +30,19 @@
 %%%%%%%%%%%%%
 -include("hyparerl.hrl").
 
-
--export([free_slots/3]).
 %%%%%%%%%%%%%
 %% Exports %%
 %%%%%%%%%%%%%
 
 %% Operations
--export([start_link/1, stop/0, join_cluster/1]).
+-export([start_link/1, stop/0, join_cluster/1, shuffle/0]).
 
 %% View related
 -export([get_peers/0, get_passive_peers/0]).
 
-%% Synchronus events
--export([join/1, join_reply/1, neighbour/2, disconnect/1, error/2]).
-
-%% ASynchronus events
--export([forward_join/3, shuffle/4, shuffle_reply/1]).
+%% Events
+-export([join/1, join_reply/1, forward_join/3, neighbour/2, disconnect/1,
+         error/2, shuffle/4, shuffle_reply/1]).
 
 %% gen_server callbacks
 -export([init/1, terminate/2, code_change/3,
@@ -88,6 +84,11 @@ stop() ->
 %% @doc Let the <b>hypar_node</b> join a cluster via <em>ContactNode</em>.
 join_cluster(ContactNode) ->
     gen_server:call(?MODULE, {join_cluster, ContactNode}).
+
+-spec shuffle() -> shuffle.
+%% @doc Force a node to do a shuffle operation
+shuffle() ->
+    ?MODULE ! shuffle.
 
 %%%%%%%%%%%%%%%%%%%%%
 %% Peer operations %%

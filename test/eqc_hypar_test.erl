@@ -13,14 +13,13 @@
 
 -record(st, {id           = {{127,0,0,1},6000},
              active       = [],
-             passive      = [],
              nodes        = [],
-             shuffles     = [],
              arwl         = 6,
              prwl         = 3,
              active_size  = 5,
              passive_size = 30,
-             xlistsize    = 7
+             k_active     = 3,
+             k_passive    = 4
             }).
 
 test() ->
@@ -30,9 +29,7 @@ test() ->
     eqc:quickcheck(prop_hypar_node()).
 
 prop_hypar_node() ->
-    Options0 = application:get_all_env(hyparerl),
-    Options1 = proplists:delete(shuffle_period, Options0),
-    Options = proplists:delete(shuffle_buffer, Options1),
+    Options = application:get_all_env(hyparerl),
     
     ?FORALL(Cmds, commands(?MODULE, initial_state(Options)),
             aggregate(command_names(Cmds),
@@ -58,10 +55,13 @@ initial_state(Opts) ->
     PassiveSize = proplists:get_value(passive_size, Opts),
     KActive = proplists:get_value(k_active, Opts),
     KPassive = proplists:get_value(k_passive, Opts),
-    Id = proplists:get_value(id, Opts),
 
-    #st{arwl=ARWL,prwl=PRWL,active_size=ActiveSize,passive_size=PassiveSize,
-        xlistsize = KActive + KPassive, id=Id}.
+    #st{arwl=ARWL,
+        prwl=PRWL,
+        ctive_size=ActiveSize,
+        passive_size=PassiveSize,
+        k_active = KActive,
+        k_passive = KPassive}.
 
 command(S) when S#st.nodes =:= [] ->
     {call, erlang, make_ref, []};
