@@ -60,6 +60,5 @@ default_options() ->
      {k_active, 3},
      {k_passive, 4},
      {shuffle_period, 10000},
-     {shuffle_buffer, 5},
      {timeout, 1000},
      {send_timeout, 1000}].

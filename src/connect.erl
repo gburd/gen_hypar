@@ -95,8 +95,8 @@ join(Remote, ConnectOpts) ->
     end.    
 
 %% @doc Send a forward join over an existing active connection <em>Conn</em>.
-forward_join(Conn, Req, TTL) ->
-    gen_fsm:send_event(Conn, {forward_join, Req, TTL}).
+forward_join(Peer, Req, TTL) ->
+    gen_fsm:send_event(Peer#peer.conn, {forward_join, Req, TTL}).
 
 %% @doc Create a new active connection <em>To</em> and send a join_reply.
 join_reply(Remote, ConnectOpts) ->
@@ -118,8 +118,8 @@ neighbour(Remote, Priority, ConnectOpts) ->
 %% @doc Send a shuffle request to an active connection <em>Conn</em>. The
 %%      source node is <em>Req</em> with id <em>SId</em>, time to live
 %%      <em>TTL</em> and exchange list <em>XList</em>.
-shuffle(Conn, Req, TTL, XList) ->
-    gen_fsm:send_event(Conn, {shuffle, Req, TTL, XList}).
+shuffle(Peer, Req, TTL, XList) ->
+    gen_fsm:send_event(Peer#peer.conn, {shuffle, Req, TTL, XList}).
 
 %% @doc Send a shuffle reply to <em>To</em> in shuffle reply with id
 %%      <em>SId</em> carrying the reply list <em>XList</em>.
@@ -130,7 +130,7 @@ shuffle_reply(Remote, XList, ConnectOpts) ->
     end.
 
 %% @doc Disconnect an active connection <em>Conn</em>.
-disconnect(Conn) -> gen_fsm:sync_send_event(Conn, disconnect).
+disconnect(Peer) -> gen_fsm:sync_send_event(Peer#peer.conn, disconnect).
 
 %% @doc Start an incoming connection via ranch
 start_link(LPid, Socket, _Transport, ConnectOpts) ->

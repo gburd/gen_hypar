@@ -142,13 +142,13 @@ disconnect(Sender) ->
 error(Sender, Reason) ->
     gen_server:cast(?MODULE, {error, Sender, Reason}).
 
--spec shuffle(Sender :: id(), Requester :: id(), XList :: xlist(),
-              TTL :: non_neg_integer()) -> ok.
+-spec shuffle(Sender :: id(), Requester :: id(), TTL :: non_neg_integer(),
+              XList :: xlist()) -> ok.
 %% @doc Shuffle request from <em>Sender</em>. The shuffle request originated in
 %%      node <em>Requester</em> and <em>XList</em> contains sample node
 %%      identifiers. The message has a time to live of <em>TTL</em>
-shuffle(Sender, Requester, XList, TTL) ->
-    gen_server:cast(?MODULE, {shuffle, Sender, Requester, XList, TTL}).
+shuffle(Sender, Requester, TTL, XList) ->
+    gen_server:cast(?MODULE, {shuffle, Sender, Requester, TTL, XList}).
 
 -spec shuffle_reply(ReplyXList :: xlist()) -> ok.
 %% @doc Shuffle reply to shuffle request with reference <em>Ref</em> sent from
@@ -204,8 +204,8 @@ handle_call({join, Sender}, {Pid,_}, S0) ->
     %% Send forward joins
     ARWL = proplists:get_value(arwl, S#st.opts),
     
-    ForwardFun = fun(X) -> connect:forward_join(X#peer.conn, Sender, ARWL) end,
-    FilterFun  = fun(X) -> X#peer.id =/= Sender end,
+    ForwardFun = fun(P) -> connect:forward_join(P, Sender, ARWL) end,
+    FilterFun  = fun(P) -> P#peer.id =/= Sender end,
     ForwardNodes = lists:filter(FilterFun, S#st.activev),
     
     lists:foreach(ForwardFun, ForwardNodes),
@@ -276,7 +276,7 @@ handle_cast({forward_join, Sender, NewNode, TTL}, S0) ->
             AllButSender = lists:keydelete(Sender, #peer.id, S1#st.activev),
             P = misc:random_elem(AllButSender),
 
-            connect:forward_join(P#peer.conn, NewNode, TTL-1),
+            connect:forward_join(P, NewNode, TTL-1),
             {noreply, S1}
     end;
 
@@ -290,7 +290,7 @@ handle_cast({shuffle, Sender, Req, TTL, XList}, S) ->
         true ->
             AllButSender = lists:keydelete(Sender, #peer.id, S#st.activev),
             P = misc:random_elem(AllButSender),
-            connect:shuffle(P#peer.conn, Req, TTL-1, XList),
+            connect:shuffle(P, Req, TTL-1, XList),
             {noreply, S};
         %% Accept the shuffle request, add to passive view and reply
         false ->
@@ -307,14 +307,10 @@ handle_cast({shuffle_reply, ReplyXList}, S0) ->
 
 %% Disconnect an open active connection, add disconnecting node to passive view
 handle_cast({disconnect, Sender}, S0) ->
-    case lists:keyfind(Sender, #peer.id, S0#st.activev) of
-        #peer{id=Sender} ->
-            %% Disconnect the peer, close the connection and add node to passive view
-            ActiveV = lists:keydelete(Sender, #peer.id, S0#st.activev),
-            {noreply, add_node_passive(Sender, S0#st{activev=ActiveV})};
-        false ->
-            {noreply, {error, not_in_active}, S0}
-    end;
+    %% Disconnect the peer, close the connection and add node to passive view
+    ActiveV = lists:keydelete(Sender, #peer.id, S0#st.activev),
+    {noreply, add_node_passive(Sender, S0#st{activev=ActiveV})};
+
 
 %% Handle failing connections. Try to find a new one if possible
 handle_cast({error, Sender, Reason}, S0) ->
@@ -334,7 +330,7 @@ handle_info(shuffle, S) ->
                 P = misc:random_elem(S#st.activev),                
                 ARWL = proplists:get_value(arwl, S#st.opts),
                 
-                connect:shuffle(P#peer.conn, S#st.id, ARWL-1, XList),
+                connect:shuffle(P, S#st.id, ARWL-1, XList),
                 XList
         end,
     
@@ -442,7 +438,7 @@ drop_random_active(S) ->
     {Peer, ActiveV} = misc:drop_random(S#st.activev),
     PassiveV = [Peer#peer.id|misc:drop_n_random(Slots, PassiveV0)],
 
-    connect:disconnect(Peer#peer.conn),
+    connect:disconnect(Peer),
     
     S#st{activev=ActiveV, passivev=PassiveV}.
 
