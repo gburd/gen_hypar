@@ -61,6 +61,7 @@
              passivev = [] :: passive_view(),    %% The passive view
              last_xlist    :: xlist(),           %% The last shuffle xlist sent
              opts          :: options(),         %% Options
+             connect_opts  :: options(),         %% Options related to TCP
              target        :: atom()             %% Target process that receives
             }).                                  %% link events and messages
 
@@ -171,24 +172,28 @@ init(Options) ->
     %% Find target process
     Target = proplists:get_value(target, Options),    
 
+    ConnectOpts = connect:initialize(Options),
+
     %% Start shuffle
     ShufflePeriod = proplists:get_value(shuffle_period, Options),
     shuffle_timer(ShufflePeriod),
     
-    {ok, #st{id=ThisNode, opts=Options, target=Target}}.
+    {ok, #st{id=ThisNode,
+             opts=Options,
+             connect_opts=ConnectOpts,
+             target=Target}}.
 
 %% Join a cluster via a given contact-node
 %% According to the paper this should only be done once. I don't really see
 %% why one would not be able to do multiple cluster joins to rejoin or to
 %% populate the active view faster
 handle_call({join_cluster, ContactNode}, _, S0) ->
-    case connect:join(ContactNode) of
+    case connect:join(ContactNode, S0#st.connect_opts) of
+        {ok, P} -> {reply, ok, add_node_active(P, S0)};
         {error, Err} ->
             lager:error("Join cluster via ~p failed with error ~p.~n",
                         [ContactNode, Err]),
-            {reply, {error, Err}, S0};
-        P ->
-            {reply, ok, add_node_active(P, S0)}
+            {reply, {error, Err}, S0}
     end;
 
 %% Add newly joined node to active view, propagate forward joins
@@ -252,12 +257,11 @@ handle_cast({forward_join, Sender, NewNode, TTL}, S0) ->
         true ->
             %% Add to active view, send a reply to the join_reply to let the
             %% other node know
-            case connect:join_reply(NewNode) of
+            case connect:join_reply(NewNode, S0#st.connect_opts) of
+                {ok, P} -> {noreply, add_node_active(P, S0)};
                 {error, Err} ->
                     lager:error("Join reply error ~p to ~p.~n", [Err, NewNode]),
-                    {noreply, S0};
-                P ->
-                    {noreply, add_node_active(P, S0)}
+                    {noreply, S0}
             end;
         false ->
             %% Add to passive view if TTL is equal to PRWL
@@ -279,19 +283,19 @@ handle_cast({forward_join, Sender, NewNode, TTL}, S0) ->
 %% temporary connection to the source of the request. If the node accept then
 %% it adds the shuffle list into it's passive view and responds with with
 %% a shuffle reply
-handle_cast({shuffle, Sender, Req, TTL, XList}, S0) ->
-    case TTL > 0 andalso length(S0#st.activev) > 1 of
+handle_cast({shuffle, Sender, Req, TTL, XList}, S) ->
+    case TTL > 0 andalso length(S#st.activev) > 1 of
         %% Propagate the random walk
         true ->
-            AllButSender = lists:keydelete(Sender, #peer.id, S0#st.activev),
+            AllButSender = lists:keydelete(Sender, #peer.id, S#st.activev),
             P = misc:random_elem(AllButSender),
             connect:shuffle(P#peer.conn, Req, TTL-1, XList),
-            {noreply, S0};
+            {noreply, S};
         %% Accept the shuffle request, add to passive view and reply
         false ->
-            ReplyXList = misc:take_n_random(length(XList), S0#st.passivev),
-            connect:shuffle_reply(Req, ReplyXList),
-            {noreply, add_xlist(S0, XList, ReplyXList)}
+            ReplyXList = misc:take_n_random(length(XList), S#st.passivev),
+            connect:shuffle_reply(Req, ReplyXList, S#st.connect_opts),
+            {noreply, add_xlist(S, XList, ReplyXList)}
     end;
 
 %% Accept a shuffle reply, add the reply list into the passive view and
@@ -326,8 +330,7 @@ handle_info(shuffle, S) ->
             true -> [];
             false ->
                 XList = create_xlist(S),
-                P = misc:random_elem(S#st.activev),
-                
+                P = misc:random_elem(S#st.activev),                
                 ARWL = proplists:get_value(arwl, S#st.opts),
                 
                 connect:shuffle(P#peer.conn, S#st.id, ARWL-1, XList),
@@ -449,7 +452,7 @@ drop_random_active(S) ->
 find_new_active(S) ->
     Priority = get_priority(S#st.activev),
 
-    case find_neighbour(Priority, S#st.passivev) of
+    case find_neighbour(Priority, S#st.passivev, S#st.connect_opts) of
         {no_valid, PassiveV} ->
             lager:info("No accepting peers in passive view.~n"),
             S#st{passivev=PassiveV};
@@ -457,31 +460,32 @@ find_new_active(S) ->
             add_node_active(Peer, S#st{passivev=PassiveV})
     end.
 
--spec find_neighbour(Priority :: priority(), PassiveV :: passive_view()) ->
-                            {#peer{} | no_valid, passive_view()}.
+-spec find_neighbour(Priority :: priority(), PassiveV :: passive_view(),
+                    ConnectArgs :: options()) -> {#peer{} | no_valid, passive_view()}.
 %% @private
 %% @doc Try to find a new active neighbour to <em>ThisNode</em> with priority
 %%      <em>Priority</em>. Try random nodes out of <em>PassiveV</em>, removing
 %%      failing once and logging declined requests. Returns either a new active
 %%      peer along with the new passive view or <b>no_valid</b> if no peers
 %%      were connectable.
-find_neighbour(Priority, PassiveV) ->
-    find_neighbour(Priority, PassiveV, []).
+find_neighbour(Priority, PassiveV, ConnectOpts) ->
+    find_neighbour(Priority, PassiveV, ConnectOpts, []).
 
 -spec find_neighbour(Priority :: priority(), PassiveV :: passive_view(),
-                     Tried :: view()) -> {#peer{} | no_valid, passive_view()}.
+                     ConnectOpts :: options(), Tried :: view()) ->
+                            {#peer{} | no_valid, passive_view()}.
 %% @private
 %% @doc Helper function for find_neighbour/3.
-find_neighbour(_, [], Tried) ->
+find_neighbour(_, [], _, Tried) ->
     {no_valid, Tried};
-find_neighbour(Priority, PassiveV0, Tried) ->
+find_neighbour(Priority, PassiveV0, ConnectOpts, Tried) ->
     {Node, Passive} = misc:drop_random(PassiveV0),
-    case connect:neighbour(Node, Priority) of
+    case connect:neighbour(Node, Priority, ConnectOpts) of
+        {ok, P} -> {P,Passive ++ Tried};
+        decline -> find_neighbour(Priority, Passive, ConnectOpts, [Node|Tried]);
         {error, Err} ->
             lager:error("Neighbour error ~p to ~p.~n", [Err, Node]),
-            find_neighbour(Priority, Passive, Tried);
-        decline -> find_neighbour(Priority, Passive, [Node|Tried]);
-        P  -> {P,Passive ++ Tried}
+            find_neighbour(Priority, Passive, ConnectOpts, Tried) 
     end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%

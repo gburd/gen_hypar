@@ -45,7 +45,6 @@ start(_StartType, _StartArgs) ->
                                       false -> [OptPair|Acc0]
                                   end
                           end, Options0, default_options()),
-    connect:initialize(Options),
     hyparerl_sup:start_link(Options).
 
 stop(_State) ->

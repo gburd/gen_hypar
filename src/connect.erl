@@ -2,24 +2,19 @@
 %% @doc Module that takes care of connections in the hyparerl application
 %%
 %%      =Binary formats=
-%%      All messages sent as first contact(join, forward_join_reply, neighbour
-%%      requests and shuffle replys have basically the same format:
-%%      <<?MSG_TYPE, Id:48>>
 %%      ==Identifier=
 %%      encode_id({{A, B, C, D}, Port}) = <<A, B, C, D, Port:16/integer>>
 %%      (6 bytes)
 %%      ==Join==
-%%      <<?JOIN, Port:16/integer>>
-%%      Only the Port is sent, the IP is grabbed via the socket
+%%      <<?JOIN, BId:6/binary>>
 %%      ==Forward join== 
 %%      <<?FORWARDJOIN, Req:6/binary, TTL/integer>>
 %%      ==Join reply==
-%%      <<?JOINREPLY, Port:16/integer>>
-%%      See join.
+%%      <<?JOINREPLY, BId:6/binary>>
 %%      ==High priority neighbour request==
-%%      <<?HNEIGHBOUR, Port:16/integer>>
+%%      <<?HNEIGHBOUR, BId:6/binary>>
 %%      ==Low priority neighbour request==
-%%      <<?LNEIGHBOUR, Port:16/integer>>
+%%      <<?LNEIGHBOUR, BId:6/binary>>
 %%      ==Neighbour accept/decline==
 %%      Accept:  <<?ACCEPT>>
 %%      Decline: <<?DECLINE>>
@@ -29,26 +24,20 @@
 %%      <<?SHUFFLE, BReq:6/binary, TTL/integer, Len/integer, XList/binary>>
 %%      ==Shuffle reply==
 %%      Len is 16 bits for convinience
-%%      <<?SHUFFLEREPLY, Len:16/integer, XList/binary>>
+%%      <<?SHUFFLEREPLY, Len/integer, XList/binary>>
 %%
 %% @todo
 %%      Because of the format of the protocol some configuration parameters
 %%      have become restricted. I do not think that it imposes any problem.
 %%      Should implement a sanity check on the options when starting the
 %%      application.
-%%
-%%      I tried to use socket close as the disconnect operation. But I do not
-%%      think that it operates correctly due to OS-specific/erts reasons. When
-%%      a process dies for example a close is done, I would want that to be a
-%%      tcp_error. I change this to a DISCONNECT-byte and consider closes to be
-%%      errors, as far as the hypar_node cares atleast.
 -module(connect).
 
 -behaviour(ranch_protocol).
 -behaviour(gen_fsm).
 
 %% API
--export([start_link/1, start_link/4, filter_opts/1]).
+-export([start_link/3, start_link/4, filter_opts/1]).
 
 %% Start, stop & send
 -export([initialize/1, stop/0, send/2]).
@@ -57,26 +46,22 @@
 -export([encode_id/1, decode_id/1]).
 
 %% Incoming events to start, stop and interact with connections to remote peers
--export([join/1, forward_join/3, join_reply/1, neighbour/2, disconnect/1,
-         shuffle/4, shuffle_reply/2]).
+-export([join/2, forward_join/3, join_reply/2, neighbour/3, disconnect/1,
+         shuffle/4, shuffle_reply/3]).
 
 %% gen_fsm callbacks
 -export([init/1, handle_event/3, handle_sync_event/4, handle_info/3,
          terminate/3, code_change/4]).
 
 %% States
--export([wait_incoming/2, wait_outgoing/2, wait_outgoing/3, active/2, active/3,
-         wait_for_neighbour_reply/1, wait_for_socket/2]).
+-export([wait_incoming/2, active/2, active/3, wait_for_socket/2, wait_for_ranch/2]).
 
 -include("hyparerl.hrl").
 -include("connect.hrl").
 
 %% Record 
--record(conn, {local,
-               remote,
+-record(conn, {remote,
                target,
-               send_timeout,
-               timeout,
                socket,
                data
               }).
@@ -89,8 +74,10 @@
 initialize(Options) ->
     {IP, Port} = proplists:get_value(id, Options),
     ListenOpts = [{ip, IP}, {port,Port}],
+    ConnectOpts = filter_opts(Options),
     {ok, _} = ranch:start_listener(hypar_conn, 20, ranch_tcp, ListenOpts,
-                                   connect, filter_opts(Options)).
+                                   connect, ConnectOpts),
+    ConnectOpts.
 
 %% @doc Stop the ranch listener
 stop() -> ranch:stop_listener(tcp_conn).
@@ -100,32 +87,32 @@ send(Conn, Bin) -> gen_fsm:send_event(Conn, {message, Bin}).
 
 %% @doc Create a tcp-connection to <em>To</em>. Send a join message and put this
 %%      connection in active state.
-join(To) ->
-    {ok, Conn} case supervisor:start_child(connect_sup, []),
-    case gen_fsm:sync_send_event(Conn, {join, To}) of
-        ok ->  #peer{id=To, conn=Conn};
+join(Remote, ConnectOpts) ->
+    Local = proplists:get_value(id, ConnectOpts),
+    case start_connection(Remote, ConnectOpts) of
+        {ok, Socket} -> send_join(Local, Remote, Socket);
         Err -> Err
-    end.
+    end.    
 
 %% @doc Send a forward join over an existing active connection <em>Conn</em>.
 forward_join(Conn, Req, TTL) ->
     gen_fsm:send_event(Conn, {forward_join, Req, TTL}).
 
 %% @doc Create a new active connection <em>To</em> and send a join_reply.
-join_reply(To) ->
-    {ok, Conn} = supervisor:start_child(connect_sup, []),
-    case gen_fsm:sync_send_event(Conn, {join_reply, To}) of
-        ok ->  #peer{id=To, conn=Conn};            
+join_reply(Remote, ConnectOpts) ->
+    Local = proplists:get_value(id, ConnectOpts),
+    case start_connection(Remote, ConnectOpts) of
+        {ok, Socket} -> send_join_reply(Local, Remote, Socket);
         Err -> Err
     end.
 
 %% @doc Create a new connection to <em>To</em> and send a neighbour request with
 %%      priority <em>Priority</em>. 
-neighbour(To, Priority) ->
-    {ok, Conn} = supervisor:start_child(connect_sup, []),
-    case gen_fsm:sync_send_event(Conn, {neighbour, To, Priority}) of
-        accept  -> #peer{id=To, conn=Conn};
-        DeclineOrErr -> DeclineOrErr
+neighbour(Remote, Priority, ConnectOpts) ->
+    case start_connection(Remote, ConnectOpts) of
+        {ok, Socket} ->
+            send_neighbour_request(Remote, Priority, Socket, ConnectOpts);
+        Err -> Err
     end.
 
 %% @doc Send a shuffle request to an active connection <em>Conn</em>. The
@@ -136,29 +123,32 @@ shuffle(Conn, Req, TTL, XList) ->
 
 %% @doc Send a shuffle reply to <em>To</em> in shuffle reply with id
 %%      <em>SId</em> carrying the reply list <em>XList</em>.
-shuffle_reply(To, XList) ->
-    {ok, Conn}  = supervisor:start_child(connect_sup, []),
-    gen_fsm:send_event(Conn, {shuffle_reply, To, XList}).
+shuffle_reply(Remote, XList, ConnectOpts) ->
+    case start_connection(Remote, ConnectOpts) of
+        {ok, Socket} -> send_shuffle_reply(XList, Socket);
+        Err -> Err
+    end.
 
 %% @doc Disconnect an active connection <em>Conn</em>.
 disconnect(Conn) -> gen_fsm:sync_send_event(Conn, disconnect).
 
 %% @doc Start an incoming connection via ranch
-start_link(LPid, Socket, _Transport, Options) ->
-    gen_fsm:start_link(?MODULE, [LPid, Socket, Options], []).
+start_link(LPid, Socket, _Transport, ConnectOpts) ->
+    gen_fsm:start_link(?MODULE, [incoming, LPid, Socket, ConnectOpts], []).
 
-%% @doc Start an outgoing connection
-start_link(Options) ->
-    gen_fsm:start_link(?MODULE, [Options], []).
+%% @doc Start an outgoing active connection
+start_link(ConnectOpts, Remote, Socket) ->
+    gen_fsm:start_link(?MODULE, [outgoing, Remote, Socket, ConnectOpts], []).
 
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
 
-init([LPid, Socket, Options]) ->
-    {ok, wait_for_socket, {LPid, initial_state(Options, Socket)}, 0};
-init([Options]) ->
-    {ok, wait_outgoing, initial_state(Options)}.
+init([incoming, LPid, Socket, Options]) ->
+    {ok, wait_for_ranch, {LPid, initial_state(Socket, Options), Options}, 0};
+init([outgoing, Remote, Socket, Options]) ->
+    C = initial_state(Socket, Options),
+    {ok, wait_for_socket, C#conn{remote=Remote}}.
 
 %% @doc Active state
 %%      Four possibilities; Either it is a binary message, a forward-join,
@@ -177,9 +167,11 @@ active({shuffle, Req, TTL, XList}, C) ->
     try_send(C, Bin).
 
 active(disconnect, _, C) ->
+    Socket = C#conn.socket,
     link_down(C#conn.target, C#conn.remote),
-    gen_tcp:send(C#conn.socket, <<?DISCONNECT>>),
-    {reply, ok, temporary, C}.
+    gen_tcp:send(Socket, <<?DISCONNECT>>),
+    gen_tcp:close(Socket),
+    {stop, normal, ok, C}.
 
 %% Receive socket data
 handle_info({tcp, Socket, Data}, active, C) ->
@@ -199,63 +191,77 @@ handle_info({tcp_error, _, Reason}, active, C) ->
 handle_info({tcp_error, _, _}, temporary, C) ->
     {stop, normal, C}.
 
-
 %%%===================================================================
 %%% Outgoing connections
 %%%===================================================================
 
-%% Start a connection and send a join
-wait_outgoing({join, To}, _, C) ->
-    {_, Port} = C#conn.local,
-    Bin = <<?JOIN, Port:16/integer>>,
-    try_connect_send(C#conn{remote=To}, Bin);
+%% @doc Try to send a join over the socket. If successful returns a peer or
+%%      an error.
+send_join(Local, Remote, Socket) ->
+    BId = encode_id(Local),
+    try_send_start_active(Remote, Socket, <<?JOIN, BId/binary>>).
 
-%% Start a connection and send a join reply
-wait_outgoing({join_reply, To}, _, C) ->
-    {_, Port} = C#conn.local,
-    Bin = <<?JOINREPLY, Port:16/integer>>,
-    try_connect_send(C#conn{remote=To}, Bin);
+%% @doc Try to send a join reply over the socket, return a peer if sucessful.
+send_join_reply(Local, Remote, Socket) ->
+    BId = encode_id(Local),
+    try_send_start_active(Remote, Socket, <<?JOINREPLY, BId/binary>>).
 
-%% Start a connection and send a neighbour request then wait for a response
-wait_outgoing({neighbour, To, Priority}, _, C0) ->
-    {_, Port} = C0#conn.local,
-    C = C0#conn{remote=To},
+%% @doc Try to send a neighbour request over the socket. Wait for a reply,
+%%      and respond to that reply. If the request is successful return a peer.
+send_neighbour_request(Remote, Priority, Socket, ConnectOpts) ->    
+    Local = proplists:get_value(id, ConnectOpts),
+    Timeout = proplists:get_value(timeout, ConnectOpts),
+    BId = encode_id(Local),
     Bin = case Priority of
-              high -> <<?HNEIGHBOUR, Port:16/integer>>;
-              low  -> <<?LNEIGHBOUR, Port:16/integer>>
+              high -> <<?HNEIGHBOUR, BId/binary>>;
+              low  -> <<?LNEIGHBOUR, BId/binary>>
           end,
-
-    case start_conn(C) of
-        {ok, Socket} ->
-            case gen_tcp:send(Socket, Bin) of
-                ok  -> wait_for_neighbour_reply(C#conn{socket=Socket});
-                Err -> {stop, Err, Err, C}
-            end;
-        Err -> {stop, Err, Err, C}
-    end.                                        
-
-%% Start a temporary connection and send a shuffle reply
-wait_outgoing({shuffle_reply, To, XList}, C0) ->
-    C = C0#conn{remote=To},
-    case start_conn(C) of
-        {ok, Socket} ->
-            Len = length(XList),
-            BXList = encode_xlist(XList),
-            Bin = <<?SHUFFLEREPLY, Len:16/integer, BXList/binary>>,
-            case gen_tcp:send(Socket, Bin) of
-                ok ->  {next_state, temporary, Socket};
-                Err -> {stop, Err, C}
-            end;
-        Err -> {stop, Err, C}
+    case gen_tcp:send(Socket, Bin) of
+        ok -> wait_for_neighbour_reply(Remote, Socket, Timeout);
+        Err -> Err
     end.
 
-%% Wait for a reply on a neighbour request
-wait_for_neighbour_reply(C=#conn{socket=Socket}) ->
-    case gen_tcp:recv(Socket, 1, C#conn.timeout) of
-        {ok, <<?ACCEPT>>}  -> {reply, accept, active, C};
-        {ok, <<?DECLINE>>} -> {stop, normal, decline, C};
-        Err                -> {stop, normal, Err, C}
+%% @doc Receive an accept/decline byte from the socket.
+wait_for_neighbour_reply(Remote, Socket, Timeout) ->
+    case gen_tcp:recv(Socket, 1, Timeout) of
+        {ok, <<?ACCEPT>>} ->
+            {ok, new_peer(Remote, Socket)};
+        {ok, <<?DECLINE>>} ->
+            gen_tcp:close(Socket),
+            decline;
+        Err -> Err
     end.
+
+%% @doc Send a shuffle reply
+send_shuffle_reply(XList, Socket) ->
+    Len = length(XList),
+    BXList = encode_xlist(XList),
+    Bin = <<?SHUFFLEREPLY, Len/integer, BXList/binary>>,
+    case gen_tcp:send(Socket, Bin) of
+        ok -> ok;
+        Err -> Err
+    end.
+
+%% @doc Try to send <em>Bin</em> over <em>Socket</em>. If successful start a
+%%      new controlling process and return that as a #peer{}.
+try_send_start_active(Remote, Socket, Bin) ->    
+    case gen_tcp:send(Socket, Bin) of
+        ok -> {ok, new_peer(Remote, Socket)};
+        Err -> Err
+    end.
+
+%% @doc Create a new peer, change controlling process and send a go-ahead
+%%      to the new connection process.
+new_peer(Remote, Socket) ->
+    {ok, Pid} = supervisor:start_child(connect_sup, [Remote, Socket]),
+    gen_tcp:controlling_process(Socket, Pid),
+    gen_fsm:send_event(Pid, {go_ahead, Socket}),
+    #peer{id=Remote, conn=Pid}.
+
+%% Wait for the go-ahead from the hypar_node starting the connection
+wait_for_socket({go_ahead, Socket}, C=#conn{socket=Socket}) ->
+    inet:setopts(Socket, [{active, true}]),
+    {next_state, active, C}.
 
 %%%===================================================================
 %%% Related to incoming connections
@@ -266,58 +272,139 @@ wait_for_neighbour_reply(C=#conn{socket=Socket}) ->
 %%      message in is. This can be either:
 %%      A join, forward join reply, low/high neighbour request or a shuffle
 %%      reply. 
-wait_incoming(timeout, C0) ->
-    Socket = C0#conn.socket,
-    inet:setopts(Socket, [{nodelay, true}, {send_timeout, C0#conn.send_timeout}]),
-    {ok, {RemoteIP, _}} = inet:sockname(Socket),
-    C = C0#conn{remote={RemoteIP,undefined}},
-    %% Read 3 bytes to determine what kind of message it is
-    case gen_tcp:recv(Socket, 3 ,C#conn.timeout) of
+wait_incoming(timeout, {C, ConnectOpts}) ->
+    Socket = C#conn.socket,
+    SendTimeout = proplists:get_value(send_timeout, ConnectOpts),
+    Timeout = proplists:get_value(timeout, ConnectOpts),
+    inet:setopts(Socket, [{nodelay, true}, {send_timeout, SendTimeout}]),
+    %% Read 1 bytes to determine what kind of message it is
+    case gen_tcp:recv(Socket, 1 , Timeout) of
         {ok, Bin} ->
             case Bin of
-                <<?JOIN, Port:16/integer>>       -> handle_join(C, Port);
-                <<?JOINREPLY, Port:16/integer>>  -> handle_join_reply(C, Port);
-                <<?LNEIGHBOUR, Port:16/integer>> -> handle_neighbour(C, Port, low);
-                <<?HNEIGHBOUR, Port:16/integer>> -> handle_neighbour(C, Port, high);
-                <<?SHUFFLEREPLY, Len:16/integer>>      -> handle_shuffle_reply(C, Len)
+                <<?JOIN>>         -> handle_join(Timeout, C);
+                <<?JOINREPLY>>    -> handle_join_reply(Timeout, C);
+                <<?LNEIGHBOUR>>   -> handle_neighbour(Timeout, C, low);
+                <<?HNEIGHBOUR>>   -> handle_neighbour(Timeout, C, high);
+                <<?SHUFFLEREPLY>> -> handle_shuffle_reply(Timeout, C)
             end;
         {error, Err} -> {stop, {error, Err}, C}
     end.
 
+%% @doc Handle a incoming join. Receive the identifier and
+%%      call hypar_node:join(Id) and move to active.
+handle_join(Timeout, C) ->
+    case recv_id(Timeout, C) of
+        {ok, Id} ->
+            ok = hypar_node:join(Id),
+            inet:setopts(C#conn.socket, [{active, true}]),
+            {next_state, active, C#conn{remote=Id}};
+        Err ->
+            {stop, Err, C}
+    end.
+
+%% @doc Handle an incoming join reply.
+%%      Call hypar_node:join_reply(Id) and move to active
+handle_join_reply(Timeout, C) -> 
+    case recv_id(Timeout, C) of
+        {ok, Id} ->
+            ok = hypar_node:join_reply(Id),
+            inet:setopts(C#conn.socket, [{active, true}]),
+            {next_state, active, C#conn{remote=Id}};
+        Err ->
+            {stop, Err, C}
+    end.
+
+%% @doc Handle an incoming neighbour request. Construct the remote
+%%      Id and call hypar_node:neighbour(Id, Priority) checking the return and
+%%      either send ACCEPT or DECLINE back on the socket.
+handle_neighbour(Timeout, C0, Priority) ->
+    case recv_id(Timeout, C0) of
+        {ok, Id} ->
+            C = C0#conn{remote=Id},
+            case hypar_node:neighbour(Id, Priority) of
+                accept  -> accept_neighbour(C);
+                decline -> decline_neighbour(C)
+            end;
+        Err -> 
+            {stop, Err, C0}
+    end.
+
+%% @doc Accept a neighbour, send ACCEPT back on socket and move to active.
+accept_neighbour(C) ->
+    case gen_tcp:send(C#conn.socket, <<?ACCEPT>>) of
+        ok ->
+            inet:setopts(C#conn.socket, [{active, true}]),
+            {next_state, active, C};
+        {error, Err} ->
+            hypar_node:error(C#conn.remote, Err),
+            {stop, {error, Err}, C}
+    end.
+
+%% @doc Decline a neighbour, send DECLINE back on socket and close this
+%%      connection.
+decline_neighbour(C) ->
+    Socket = C#conn.socket,
+    case gen_tcp:send(Socket, <<?DECLINE>>) of
+        ok  ->
+            gen_tcp:close(Socket),
+            {stop, normal, C};
+        Err ->
+            {stop, Err, C}
+    end.
+
+%% @doc Receive the exchange list of length <em>Len</em>  for shuffle with id
+%%      <em>SId</em> for the shuffle reply.
+handle_shuffle_reply(Timeout, C) ->
+    Socket = C#conn.socket,
+    case gen_tcp:recv(Socket, 1, Timeout) of
+        {ok, <<0>>} ->
+            hypar_node:shuffle_reply([]),
+            gen_tcp:close(Socket),
+            {stop, normal, C};
+        {ok, <<Len/integer>>} ->
+            case gen_tcp:recv(Socket, Len*6, Timeout) of
+                {ok, Bin} ->
+                    hypar_node:shuffle_reply(parse_xlist(Bin)),
+                    gen_tcp:close(Socket),
+                    {stop, normal, C};
+                Err -> {stop, Err, C}
+            end;        
+        Err -> {stop, Err, C}
+    end.
+
+
 %% Wait for the go-ahead from the ranch server
-wait_for_socket(timeout, {LPid, C}) ->
+wait_for_ranch(timeout, {LPid, C, Options}) ->
     ok = ranch:accept_ack(LPid),
-    {next_state, wait_incoming, C, 0}.
-
-%%%===================================================================
-%%% Not used
-%%%===================================================================
-
-handle_event(_, _, S) ->
-    {stop, not_used, S}.
-
-handle_sync_event(_, _, _, S) ->
-    {stop, not_used, S}.
-
-code_change(_,StateName, StateData, _) ->
-    {ok, StateName, StateData}.
-
-terminate(_, _, _) ->
-    ok.
+    {next_state, wait_incoming, {C, Options}, 0}.
 
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+
+%% @doc Deliver a message <em>Bin</em> to <em>Receiver</em> from connection
+%%      <em>Id</em>.
+deliver(Target, Id, Bin) ->
+    gen_server:cast(Target, {message, Id, Bin}).
 
 %% @doc Notify <em>Target</em> of a <b>link_down</b> event to node <em>To</em>
 link_down(Target, To) ->
     lager:info("Link down: ~p~n", [To]), 
     gen_server:cast(Target, {link_down, To}).
 
-%% @doc Deliver a message <em>Bin</em> to <em>Receiver</em> from connection
-%%      <em>Id</em>.
-deliver(Target, Id, Bin) ->
-    gen_server:cast(Target, {message, Id, Bin}).
+%% @doc Start a connection to a remote host
+start_connection({RemoteIp, RemotePort}, ConnectOpts) ->
+    {LocalIp, _} = proplists:get_value(id, ConnectOpts),
+    TimeOut = proplists:get_value(timeout, ConnectOpts),
+    SendTimeOut = proplists:get_value(send_timeout, ConnectOpts),
+    
+    Args = [{ip, LocalIp}, {send_timeout, SendTimeOut}, {active, false},
+            binary, {packet, raw}, {nodelay, true}],
+    
+    case gen_tcp:connect(RemoteIp, RemotePort, Args, TimeOut) of
+        {ok, Socket} -> {ok, Socket};
+        Err -> Err
+    end.
 
 %% @doc Parse the incoming stream of bytes in the active state.
 parse_packets(C, <<?MESSAGE, Len:32/integer, Rest0/binary>>)
@@ -346,99 +433,22 @@ parse_packets(C, <<>>) ->
 parse_packets(C, Rest) ->
     {next_state, active, C#conn{data=Rest}}.
 
-%% @doc Handle a incoming join. Construct the identifier.
-%%      Call hypar_node:join(Id) and move to active.
-handle_join(C, Port) -> handle(join, C, Port).
-
-%% @doc Handle an incoming join reply.
-%%      Call hypar_node:join_reply(Id) and move to active
-handle_join_reply(C, Port) -> handle(join_reply, C, Port).
-
-%% @doc Handle an incoming neighbour request. Construct the remote
-%%      Id and call hypar_node:neighbour(Id, Priority) checking the return and
-%%      either send ACCEPT or DECLINE back on the socket.
-handle_neighbour(C0, Port, Priority) ->
-    {RemoteIP, _} = C0#conn.remote,
-    Id = {RemoteIP, Port},
-    C = C0#conn{remote=Id},
-    case hypar_node:neighbour(Id, Priority) of
-        accept  -> accept_neighbour(C);
-        decline -> decline_neighbour(C)
+%% @doc Try to receive an identifier and decoding it. Might return an error.
+recv_id(Timeout, C) ->
+    case gen_tcp:recv(C#conn.socket, 6, Timeout) of
+        {ok, BId} -> {ok, decode_id(BId)};
+        Err -> Err
     end.
-
-%% @doc Accept a neighbour, send ACCEPT back on socket and move to active.
-accept_neighbour(C) ->
-    Socket = C#conn.socket,
-    case gen_tcp:send(Socket, <<?ACCEPT>>) of
-        ok           -> inet:setopts(Socket, [{active, once}]),
-                        {next_state, active, C};
-        {error, Err} -> hypar_node:error(C#conn.remote, Err),
-                        {stop, {error, Err}, C}
-    end.
-
-%% @doc Decline a neighbour, send DECLINE back on socket and close this
-%%      connection.
-decline_neighbour(C) ->
-    case gen_tcp:send(C#conn.socket, <<?DECLINE>>) of
-        ok  -> {next_state, temporary, C};
-        Err -> {stop, Err, C}
-    end.
-
-%% @doc Receive the exchange list of length <em>Len</em>  for shuffle with id
-%%      <em>SId</em> for the shuffle reply.
-handle_shuffle_reply(C, 0) ->
-    hypar_node:shuffle_reply([]),
-    gen_tcp:close(C#conn.socket),
-    {stop, normal, C};
-handle_shuffle_reply(C, Len) ->
-    Socket = C#conn.socket,
-    case gen_tcp:recv(Socket, Len*6, C#conn.timeout) of
-        {ok, Bin} -> hypar_node:shuffle_reply(parse_xlist(Bin)),
-                     gen_tcp:close(Socket),
-                     {stop, normal, C};
-        Err        -> {stop, Err, C}
-    end.
-
-%% @doc Try to start a connection <em>C</em> to a remote node try to send
-%%      <em>Bin</em> over the socket. And then moving into the active state.
-%%      If an error occurs, return the error and stop the connection.
-try_connect_send(C0, Bin) ->
-    case start_conn(C0) of
-        {ok, Socket} ->
-            case gen_tcp:send(Socket, Bin) of                                
-                ok  -> inet:setopts(Socket, [{active, true}]),
-                       {reply, ok, active, C0#conn{socket=Socket}};
-                Err -> {stop, Err, Err, Socket}
-            end;
-        Err -> {stop, Err, Err, C0}
-    end.
-
-%% @doc Try to start a connection <em>C</em>.
-start_conn(C) ->
-    {LocalIP, _} = C#conn.local,
-    {RemoteIP, RemotePort} = C#conn.remote,
-    Args = [{ip, LocalIP}, {send_timeout, C#conn.send_timeout},
-            {active, false}, binary, {packet, raw}, {nodelay, true}],
-    
-    gen_tcp:connect(RemoteIP, RemotePort, Args, C#conn.timeout).
 
 %% @doc Try to send <em>Bin</em> over active connection <em>C</em>. Move
 %%      to active if successful otherwise stop.
 try_send(C, Bin) ->
     case gen_tcp:send(C#conn.socket, Bin) of
-        ok ->  {next_state, active, C};
-        Err -> {_, Reason} = Err,
-               ok = hypar_node:error(C#conn.remote, Reason),
-               {stop, Err, C}
+        ok -> {next_state, active, C};
+        {error, Reason} -> 
+            ok = hypar_node:error(C#conn.remote, Reason),
+            {stop, {error, Reason}, C}
     end.
-
-%% @doc Helper function for handle_join and handle_join_reply.
-handle(F, C0, Port) ->
-    {RemoteIP, _} = C0#conn.remote,
-    Id = {RemoteIP, Port},
-    ok = hypar_node:F(Id),
-    inet:setopts(C0#conn.socket, [{active, once}]),
-    {next_state, active, C0#conn{remote=Id}}.
 
 %% @doc Parse an XList
 parse_xlist(<<>>) -> [];
@@ -463,20 +473,32 @@ encode_id({{A,B,C,D},Port}) ->
 decode_id(<<A/integer, B/integer, C/integer, D/integer, Port:16/integer>>) ->
     {{A, B, C, D}, Port}.
 
+%% @pure
+%% @doc Filter out the options related to this module
 filter_opts(Options) ->
     Valid = [id, target, timeout, send_timeout],
     lists:filter(fun({Opt,_}) -> lists:member(Opt, Valid) end, Options).                         
     
 %% @pure
 %% @doc Create the inital state from <em>Options</em>.        
-initial_state(Options) ->
-    #conn{local = proplists:get_value(id, Options),
-          target = proplists:get_value(target, Options),
-          timeout = proplists:get_value(timeout, Options),
-          send_timeout = proplists:get_value(send_timeout, Options),
+initial_state(Socket, Options) ->
+    #conn{target = proplists:get_value(target, Options),
+          socket = Socket,
           data = <<>>
          }.
 
-initial_state(Options, Socket) ->
-    S = initial_state(Options),
-    S#conn{socket=Socket}.
+%%%===================================================================
+%%% Not used
+%%%===================================================================
+
+handle_event(_, _, S) ->
+    {stop, not_used, S}.
+
+handle_sync_event(_, _, _, S) ->
+    {stop, not_used, S}.
+
+code_change(_,StateName, StateData, _) ->
+    {ok, StateName, StateData}.
+
+terminate(_, _, _) ->
+    ok.
