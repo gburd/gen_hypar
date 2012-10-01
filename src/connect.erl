@@ -80,7 +80,7 @@ initialize(Options) ->
     ConnectOpts.
 
 %% @doc Stop the ranch listener
-stop() -> ranch:stop_listener(tcp_conn).
+stop() -> ranch:stop_listener(hypar_conn).
 
 %% @doc Send a binary message <em>Bin</em> to <em>
 send(Conn, Bin) -> gen_fsm:send_event(Conn, {message, Bin}).
@@ -336,7 +336,7 @@ accept_neighbour(C) ->
             inet:setopts(C#conn.socket, [{active, true}]),
             {next_state, active, C};
         {error, Err} ->
-            hypar_node:error(C#conn.remote, Err),
+            ok = hypar_node:error(C#conn.remote, Err),
             {stop, {error, Err}, C}
     end.
 
@@ -358,13 +358,13 @@ handle_shuffle_reply(Timeout, C) ->
     Socket = C#conn.socket,
     case gen_tcp:recv(Socket, 1, Timeout) of
         {ok, <<0>>} ->
-            hypar_node:shuffle_reply([]),
+            ok = hypar_node:shuffle_reply([]),
             gen_tcp:close(Socket),
             {stop, normal, C};
         {ok, <<Len/integer>>} ->
             case gen_tcp:recv(Socket, Len*6, Timeout) of
                 {ok, Bin} ->
-                    hypar_node:shuffle_reply(parse_xlist(Bin)),
+                    ok = hypar_node:shuffle_reply(parse_xlist(Bin)),
                     gen_tcp:close(Socket),
                     {stop, normal, C};
                 Err -> {stop, Err, C}
@@ -382,15 +382,15 @@ wait_for_ranch(timeout, {LPid, C, Options}) ->
 %%% Internal functions
 %%%===================================================================
 
-%% @doc Deliver a message <em>Bin</em> to <em>Receiver</em> from connection
-%%      <em>Id</em>.
-deliver(Target, Id, Bin) ->
-    gen_server:cast(Target, {message, Id, Bin}).
+%% @doc Deliver a message <em>Bin</em> to <em>Target</em> module from connection
+%%      <em>Sender</em>.
+deliver(Target, Sender, Bin) ->
+    Target:deliver(Sender, Bin).
 
 %% @doc Notify <em>Target</em> of a <b>link_down</b> event to node <em>To</em>
 link_down(Target, To) ->
     lager:info("Link down: ~p~n", [To]), 
-    gen_server:cast(Target, {link_down, To}).
+    Target:link_down(To).
 
 %% @doc Start a connection to a remote host
 start_connection({RemoteIp, RemotePort}, ConnectOpts) ->
@@ -413,7 +413,7 @@ parse_packets(C, <<?MESSAGE, Len:32/integer, Rest0/binary>>)
     deliver(C#conn.target, C#conn.remote, Msg),
     parse_packets(C, Rest);
 parse_packets(C, <<?FORWARDJOIN, BReq:6/binary, TTL/integer, Rest0/binary>>) ->
-    hypar_node:forward_join(C#conn.remote, decode_id(BReq), TTL),
+    ok = hypar_node:forward_join(C#conn.remote, decode_id(BReq), TTL),
     parse_packets(C, Rest0);
 parse_packets(C, <<?SHUFFLE, BReq:6/binary, TTL/integer, Len/integer,
                    Rest0/binary>>)
@@ -421,11 +421,11 @@ parse_packets(C, <<?SHUFFLE, BReq:6/binary, TTL/integer, Len/integer,
     XListLen = Len*6,
     <<BinXList:XListLen/binary, Rest/binary>> = Rest0,
     XList = parse_xlist(BinXList),
-    hypar_node:shuffle(C#conn.remote, decode_id(BReq), TTL, XList),
+    ok = hypar_node:shuffle(C#conn.remote, decode_id(BReq), TTL, XList),
     parse_packets(C, Rest);
 parse_packets(C, <<?DISCONNECT>>) ->
     link_down(C#conn.target, C#conn.remote),
-    hypar_node:disconnect(C#conn.remote),
+    ok = hypar_node:disconnect(C#conn.remote),
     gen_tcp:close(C#conn.socket),
     {stop, normal, C};
 parse_packets(C, <<>>) ->

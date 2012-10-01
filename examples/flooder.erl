@@ -28,6 +28,20 @@ broadcast(Packet) ->
 init([Id]) ->
     {ok, #state{id=Id}}.
 
+handle_call({link_up, Id, Conn},_, S) ->
+    {reply, ok, S#state{peers=[{Id, Conn}|S#state.peers]}};
+
+handle_call({link_down, Id}, _, S) ->
+    {reply, ok, S#state{peers=lists:keydelete(Id, 1, S#state.peers)}}.
+    
+handle_cast({broadcast, Packet}, S) ->
+    MId = create_message_id(S#state.id, Packet),
+    deliver(Packet),
+    HPacket = header(MId, Packet),
+    multi_send(S#state.peers, HPacket),
+    NewReceived = [MId|S#state.received_messages],
+    {noreply, S#state{received_messages=NewReceived}};
+
 handle_cast({message, From, HPacket}, S) ->
     {MId, Packet} = strap_header(HPacket),
     case lists:member(MId, S#state.received_messages) of
@@ -38,27 +52,24 @@ handle_cast({message, From, HPacket}, S) ->
             multi_send(AllButFrom, HPacket),
             NewReceived = [MId|S#state.received_messages],
             {noreply, S#state{received_messages=NewReceived}}
-    end;
-
-handle_cast({link_up, Id, Conn}, S) ->
-    {noreply, S#state{peers=[{Id, Conn}|S#state.peers]}};
-
-handle_cast({link_down, Id}, S) ->
-    {noreply, S#state{peers=lists:keydelete(Id, 1, S#state.peers)}};
-    
-handle_cast({broadcast, Packet}, S) ->
-    MId = create_message_id(S#state.id, Packet),
-    deliver(Packet),
-    HPacket = header(MId, Packet),
-    multi_send(S#state.peers, HPacket),
-    NewReceived = [MId|S#state.received_messages],
-    {noreply, S#state{received_messages=NewReceived}}.
+    end.
 
 handle_info(_, S) ->
     {stop, not_used, S}.
 
 deliver(Packet) ->
     io:format("Packet deliviered:~n~p~n", [Packet]).
+
+
+%% Hyparerl callbacks
+deliver(Id, Bin) ->
+    gen_server:cast(?MODULE, {message, Id, Bin}).
+
+link_up(To, Conn) ->
+    gen_server:call(?MODULE, {link_up, To, Conn}).
+
+link_down(To) ->
+    gen_server:call(?MODULE, {link_down, To}).
 
 create_message_id(Id, Bin) ->
     BNow = term_to_binary(now()),
@@ -78,7 +89,5 @@ multi_send([{_,C}|Peers], Packet) ->
     multi_send(Peers, Packet).
 
 code_change(_,_,_) -> ok.
-
-handle_call(_,_,S) -> {stop, unused, S}.
 
 terminate(_,_) -> ok.

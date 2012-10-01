@@ -11,33 +11,31 @@
 
 %% Test the node logic
 
--record(st, {id           = {{127,0,0,1},6000},
-             active       = [],
-             nodes        = [],
-             arwl         = 6,
-             prwl         = 3,
-             active_size  = 5,
-             passive_size = 30,
-             xlistsize    = 7
+-record(st, {id,
+             active = [],
+             arwl,
+             prwl,
+             active_size,
+             passive_size,
+             xlistsize
             }).
 
+%% Shortcut
 test() ->
     application:load(hyparerl),
     application:start(meck),
     timer:sleep(1),
     eqc:quickcheck(prop_hypar_node()).
 
+%% Property
 prop_hypar_node() ->
-    Options0 = application:get_all_env(hyparerl),
-    Options = proplists:delete(shuffle_period, Options0),
-
-    noshrink(
-      ?FORALL(Cmds, commands(?MODULE, initial_state(Options)),
+      ?FORALL(Cmds, commands(?MODULE),
               aggregate(command_names(Cmds),
                         begin
                             mock_connect(),
-                            register(test, self()),
-                            {ok, _} = hypar_node:start_link(Options),
+                            register(test, self()),                            
+
+                            {ok, _} = hypar_node:start_link(options()),
                             {H, S, Res} = run_commands(?MODULE, Cmds),                
                             
                             catch hypar_node:stop(),
@@ -47,175 +45,153 @@ prop_hypar_node() ->
                                Res == ok
                             )
                         end
-                       ))).
+                       )).
 
-command(S) when S#st.nodes =:= [] ->
-    {call, erlang, make_ref, []};
+%% Commands
 command(S) ->
-    oneof([{call, erlang, make_ref, []}] ++
-              [{call, hypar_node, join, [elements(S#st.nodes)]} || S#st.nodes =/= []] ++
-              [{call, hypar_node, join_reply, [elements(S#st.nodes)]} || S#st.nodes =/= []] ++
+    oneof([{call, ?MODULE, join, []},
+           {call, ?MODULE, join_reply, []},
+           {call, hypar_node, shuffle_reply, [xlist(S#st.xlistsize+1)]},
+           {call, ?MODULE, neighbour, [oneof([low, high])]}] ++
+              [{call, ?MODULE, forward_join, [elements(S#st.active), choose(0,S#st.arwl)]} || S#st.active =/= []] ++
+              [{call, hypar_node, shuffle,
+                make_shuffle_args(elements(S#st.active), choose(0,S#st.arwl-1), S#st.xlistsize)} || S#st.active =/= []] ++
               [{call, hypar_node, disconnect, [elements(S#st.active)]} || S#st.active =/= []] ++
-              [{call, hypar_node, neighbour, [elements(S#st.nodes), oneof([low, high])]} || S#st.nodes =/= []] ++ 
-              [{call, hypar_node, error, [elements(S#st.active), an_error]} || S#st.active =/= []]).
+              [{call, hypar_node, error, [elements(S#st.active), eqc_error]} || S#st.active =/= []]).
 
-next_state(S, Node, {call, erlang, make_ref, []}) ->
-    S#st{nodes=[Node|S#st.nodes]};
-next_state(S, _, {call, hypar_node, join, [Node]}) ->
-    Nodes =  lists:delete(Node, S#st.nodes),
-    maybe_disconnect(add_node(Node, S#st{nodes=Nodes}));
-next_state(S, _, {call, hypar_node, forward_join, [_, Req, TTL]}) ->
-    case TTL =:= 0 orelse length(S#st.active) =:= 1 of
-        true  -> maybe_disconnect(add_node(Req, S));
+%% Next state
+next_state(S, Node, {call, _, join, []}) ->
+    maybe_disconnect(add_node(Node, S));
+next_state(S, Node, {call, _, join_reply, []}) ->
+    maybe_disconnect(add_node(Node, S));
+next_state(S, ReqNode, {call, _, forward_join, [_, TTL]}) ->
+    case length(S#st.active) =:= 1 orelse TTL =:= 0 of
+        true  -> maybe_disconnect(add_node(ReqNode, S));
         false -> S
     end;
-next_state(S, _, {call, hypar_node, join_reply, [Node]}) ->
-    Nodes =  lists:delete(Node, S#st.nodes),
-    maybe_disconnect(add_node(Node, S#st{nodes=Nodes}));
-next_state(S, _, {call, hypar_node, neighbour, [Node, Priority]}) ->
-    Nodes = lists:delete(Node, S#st.nodes),
-    case Priority of
-        high ->            
-            maybe_disconnect(add_node(Node, S#st{nodes=Nodes}));
-        low ->
-            case length(S#st.active) < S#st.active_size of
-                true -> add_node(Node, S#st{nodes=Nodes});
-                false -> S
-            end
+next_state(S, Node, {call, _, neighbour, [high]}) ->
+    maybe_disconnect(add_node(Node, S));
+next_state(S, Node, {call, _, neighbour, [low]}) ->
+    case length(S#st.active) < S#st.active_size of
+        true  -> add_node(Node, S);
+        false -> S
     end;
-next_state(S, _, {call, hypar_node, disconnect, [Node]}) ->
-    Nodes = [Node|S#st.nodes],
-    delete_node(Node, S#st{nodes=Nodes});
-next_state(S, _, {call, hypar_node, error, [Node, _]}) ->
-    Nodes = [Node|S#st.nodes],
-    maybe_neighbour(delete_node(Node, S#st{nodes=Nodes}));
-next_state(S, _, {call, hypar_node, shuffle, []}) ->
-    receive_shuffle(S);
+next_state(S, _, {call, _, disconnect, [Node]}) ->
+    delete_node(Node, S);
+next_state(S, _, {call, _, error, [Node, _]}) ->
+    maybe_neighbour(delete_node(Node, S));
 next_state(S,_,_) ->
     S.
+
+%% Postconditions
+postcondition(S, {call, _, join, []}, Node) ->
+    in_active_view(Node) andalso forward_joins_sent(S, Node);
+postcondition(_, {call, _, join_reply, []}, Node) ->
+    in_active_view(Node);
+postcondition(S, {call, _, forward_join, [Node, TTL]}, ReqNode) ->
+    case length(S#st.active) =:= 1 orelse TTL =:= 0 of
+        true  ->
+            in_active_view(ReqNode);
+        false ->
+            PRWL = case TTL =:= S#st.prwl of
+                       true -> in_passive_view([ReqNode]);
+                       false -> true
+                   end,
+            PRWL andalso forward_join_propagated(Node, ReqNode, TTL)
+    end;
+postcondition(_, {call, _, neighbour, [high]}, Node) ->
+    in_active_view(Node);
+postcondition(S, {call, _, neighbour, [low]}, Node) ->
+    case length(S#st.active) < S#st.active_size of
+        true  -> in_active_view(Node);
+        false -> Node =:= decline
+    end;
+postcondition(_, {call, _, disconnect, [Node]}, _) ->
+    not in_active_view(Node) andalso in_passive_view([Node]);
+postcondition(_, {call, _, error, [Node, _]}, _) ->
+    not in_active_view(Node);
+postcondition(S, {call, _, shuffle, [Node, Req, TTL, XList]}, _) ->
+    case TTL > 0 andalso length(S#st.active) > 1 of
+        true  -> shuffle_propagated(Node, Req, TTL, XList);            
+        false -> in_passive_view(XList) andalso
+                     shuffle_reply_received(Req)
+    end;
+postcondition(_, {call, _, shuffle_reply, [XList]}, _) ->
+    in_passive_view(XList).
+
+dynamic_precondition(S, {call, _, shuffle, [Node, _, _, _]}) ->
+    lists:member(Node, S#st.active);
+dynamic_precondition(S, {call, _, forward_join, [Node, _]}) ->
+    lists:member(Node, S#st.active);
+dynamic_precondition(S, {call, _, disconnect, [Node]}) ->
+    lists:member(Node, S#st.active);
+dynamic_precondition(S, {call, _, error, [Node, _]}) ->
+    lists:member(Node, S#st.active);
+dynamic_precondition(_,_) ->
+    true.
 
 precondition(_,_) ->
     true.
 
-postcondition(S, {call, hypar_node, join, [Node]}, _) ->
-    in_active_view(Node) andalso forward_joins_sent(S);
-postcondition(_, {call, hypar_node, join_reply, [Node]}, _) ->
-    in_active_view(Node);
-%% postcondition(S, {call, hypar_node, forward_join, [_, Req, TTL]}, _) ->
-%%     case TTL =:= 0 orelse length(S#st.active) =:= 1 of
-%%         %% The forward join is accepted, node is added.
-%%         true -> in_active_view(Req);
-%%         %% If TTL == PRWL then node should be in passive view
-%%         false ->
-%%             PRWL = if TTL =:= S#st.prwl ->
-%%                            in_passive_view([Req]);
-%%                       true ->
-%%                            true
-%%                    end,
-%%             PRWL andalso forward_join_propagated()
-%%     end;
-postcondition(_, {call, hypar_node, neighbour, [Node, high]}, R) ->
-    in_active_view(Node) andalso R =:= accept;
-postcondition(S, {call, hypar_node, neighbour, [Node, low]}, R) ->
-    case length(S#st.active) < S#st.active_size of
-        true  -> R =:= accept andalso in_active_view(Node);
-        false -> R =:= decline
-    end;
-%% postcondition(S, {call, hypar_node, shuffle, [_, _, TTL, XList]}, _) ->
-%%     case TTL =:= 0 orelse length(S#st.active) =:= 1 of
-%%         %% Shuffle accepted
-%%         %% XList should be in passive view
-%%         true -> in_passive_view(XList) andalso shuffle_reply_sent();
-%%         %% Shuffle propataged
-%%         false -> shuffle_propagated()
-%%     end;
-%% postcondition(_, {call, hypar_node, shuffle_reply, [ReplyXList]}, _) ->
-%%     in_passive_view(ReplyXList);
-postcondition(_, {call, hypar_node, error, [Node, _]}, _) ->
-    not in_active_view(Node);
-postcondition(_, {call, hypar_node, disconnect, [Node]}, _) ->
-    not in_active_view(Node);
-postcondition(_,_,_) ->
-    true.
-
 invariant(S) ->    
-    lists:usort([Node || {Node,_} <- hypar_node:get_peers()]) =:= lists:usort(S#st.active).
+    Active = lists:usort([Node || {Node,_} <- hypar_node:get_peers()]),
+    Model = lists:usort(S#st.active),
+    Active =:= Model andalso
+        length(Active) =< S#st.active_size.
 
-initial_state(Opts) ->
-    ARWL = proplists:get_value(arwl, Opts),
-    PRWL = proplists:get_value(prwl, Opts),
-    ActiveSize = proplists:get_value(active_size, Opts),
-    PassiveSize = proplists:get_value(passive_size, Opts),
-    KActive = proplists:get_value(k_active, Opts),
-    KPassive = proplists:get_value(k_passive, Opts),
+%% Do a join
+join() ->
+    NodeId = make_node_id(),
+    ok = hypar_node:join(NodeId),
+    NodeId.
 
-    #st{arwl=ARWL,
-        prwl=PRWL,
-        active_size=ActiveSize,
-        passive_size=PassiveSize,
-        xlistsize=1+KActive+KPassive}.
+%% Do a join-reply
+join_reply() ->
+    NodeId = make_node_id(),
+    ok = hypar_node:join_reply(NodeId),
+    NodeId.
 
-%% Check that a forward join is propagated
-forward_join_propagated() ->
-    receive {forward_join, _, _, _} -> true
-    after 0 -> false end.
+%% Do a forward-join
+forward_join(Node, TTL) ->
+    ReqId = make_ref(),
+    ok = hypar_node:forward_join(Node, ReqId, TTL),
+    ReqId.
 
-%% Check that forward joins are sent to all members of active view
-forward_joins_sent(S) ->
-    FJs = receive_forward_joins(),
-    case length(S#st.active) < S#st.active_size of
-        true  -> length(FJs) =:= length(S#st.active);            
-        false -> length(FJs) =:= S#st.active_size-1
+%% Do a neighbour request 
+neighbour(Priority) ->
+    NodeId = make_node_id(),
+    case hypar_node:neighbour(NodeId, Priority) of
+        accept  -> NodeId;
+        decline -> decline
     end.
 
-receive_forward_joins() ->
-    receive {forward_join, _, _, _}=FJ -> [FJ|receive_forward_joins()]
-    after 0 -> [] end.
+make_shuffle_args(Node, TTL, Size) ->
+    Req = make_node_id(),
+    XList = [Req|xlist(Size)],
+    [Node, Req, TTL, XList].
 
-receive_shuffle(S) ->
-    receive {shuffle, _, _, _, _} -> S
-    after 0 -> S end.
-
-%% Check that a shuffle is propagated
-shuffle_propagated() ->
-    receive {shuffle, _, _, _, _} -> true
-    after 0 -> false end.
-
-%% Check that a shuffle reply is sent
-shuffle_reply_sent() ->
-    receive {shuffle_reply, _, _} -> true
-    after 0 -> false end.
-
+%% Check if a disconnect has been sent
 maybe_disconnect(S) ->
-    receive
-        {disconnect, Node} ->
-            delete_node(Node, S)
+    receive {disconnect, DiscNode} ->
+            delete_node(DiscNode, S)
     after 0 ->
             S
-    end.
+    end.    
 
+%% After an error, check if the hypar_node has found a new neighbour
 maybe_neighbour(S) ->
-    receive
-        {neighbour, Node} ->
+    receive {neighbour, Node} ->
             add_node(Node, S)
     after 0 ->
             S
     end.
-
-%% Add a active node
-add_node(Node, S) ->
-    S#st{active=lists:usort([Node|S#st.active])}.
-
-%% Remove an active node
-delete_node(Node, S) ->
-    S#st{active=lists:delete(Node, S#st.active)}.
 
 %% Check if Node is in the current active view
 in_active_view(Node) ->
     lists:keymember(Node, 1, hypar_node:get_peers()).
 
 %% Check if Nodes are in the current passive view
-in_passive_view(Nodes) when is_list(Nodes) ->
+in_passive_view(Nodes) ->
     Active = hypar_node:get_peers(),
     Passive = hypar_node:get_passive_peers(),
     all([case lists:keymember(Node, 1, Active) of
@@ -223,47 +199,97 @@ in_passive_view(Nodes) when is_list(Nodes) ->
              false ->lists:member(Node, Passive)
          end || Node <- Nodes]).
 
-%% Create argument generators
-make_neighbour_args(S) ->
-    InActive = S#st.nodes -- S#st.active,
-    [elements(InActive), oneof([low, high])].
+%% Check that the node send out corrent forward-joins on a join
+forward_joins_sent(S, Node) ->
+    TTL = S#st.arwl,
+    F = fun(To) ->
+                receive
+                    {forward_join, To, Node, TTL} ->
+                        true
+                after 0 ->
+                        false
+                end
+        end,
+    all(lists:map(F, [To || {To, _} <- hyparerl:get_peers(), To =/= Node])).
 
-make_shuffle_args(S) ->
-    ?LET(Sender, elements(S#st.active),
-         ?LET(Req, elements(lists:delete(Sender, S#st.nodes)),
-              [Sender,
-               Req,
-               choose(0,S#st.arwl-1),
-               xlist(S)               
-              ])).
+%% Check that the forward-join is propagated with correct arguments    
+forward_join_propagated(Node, Req, TTL0) ->    
+    TTL = TTL0-1,
+    receive
+        {forward_join, To, Req, TTL} ->
+            To =/= Node andalso in_active_view(To)
+    after 0 ->
+            false
+    end.
 
-make_forward_join_args(S) ->
-    InActive = S#st.nodes -- S#st.active,
-    ?LET(Sender, elements(S#st.active),
-         [Sender,
-          elements(InActive),
-          choose(0,S#st.arwl)]).
+shuffle_propagated(Node, Req, TTL, XList) ->
+    receive
+        {shuffle, To, R, TTL0, XList0} ->
+            To =/= Node andalso in_active_view(To) andalso R =:= Req andalso
+                TTL0 =:= TTL-1 andalso XList =:= XList0
+    after 0 ->            
+            false
+    end.
 
-xlist(S) ->
-    Size = 1 + S#st.xlistsize,
-    random_n_list(Size, S#st.nodes).
+shuffle_reply_received(Req) ->
+    receive
+        {shuffle_reply, R, _} ->
+            R =:= Req
+    after 0 ->
+            false
+    end.
 
-random_n_list(_, []) ->
-    [];
-random_n_list(0, _) ->
-    [];
-random_n_list(N, List) ->
-    ?LET(Node, elements(List),         
-         [Node|random_n_list(N-1, lists:delete(Node, List))]).
+%% Create a unique node identifier(reference)
+make_node_id() -> make_ref().
 
-%% Random internal functions
+%% Create a list of Size identifiers.
+xlist(Size) -> [make_node_id() || _ <- lists:seq(1, Size)].
 
-all([]) ->
-    true;
+%% Add a active node
+add_node(Node, S) -> S#st{active=lists:usort([Node|S#st.active])}.
+
+%% Remove an active node
+delete_node(Node, S) -> S#st{active=lists:delete(Node, S#st.active)}.
+
+all([]) -> true;
 all([H|T]) -> H andalso all(T).
 
-%% Meck
+%% Callbacks
+deliver(_Sender, _Bin) ->
+    ok.
 
+link_up(_To, _) ->
+    ok.
+
+link_down(_To) ->
+    ok.
+
+initial_state() ->
+    Opts = options(),
+    KActive = proplists:get_value(k_active, Opts),
+    KPassive = proplists:get_value(k_passive, Opts),
+    Size = KActive+KPassive,
+    #st{id=proplists:get_value(id, Opts),
+        arwl=proplists:get_value(arwl, Opts),
+        prwl=proplists:get_value(prwl, Opts),
+        active_size=proplists:get_value(active_size, Opts),        
+        passive_size=proplists:get_value(passive_size, Opts),
+        xlistsize=Size}.
+
+%% Default test options
+options() ->
+    [{id, {{127,0,0,1}, 6000}},
+     {arwl, 6},
+     {prwl, 3},
+     {active_size, 5},
+     {passive_size, 30},
+     {k_active, 3},
+     {k_passive, 4},
+     {timeout, infinity},
+     {send_timeout, infinity},
+     {target, eqc_hypar_test}].
+
+%% Meck
 mock_connect() ->
     meck:unload(),
     meck:new(connect),
