@@ -2,22 +2,13 @@
  [
   {description, "This application implements the HyparView peer-sampling service"},
   {vsn, "1"},
-  {registered, [hypar_man]},
+  {registered, []},
   {applications, [
                   kernel,
                   stdlib,
-                  ranch
+                  ranch,
+                  lager               
                  ]},
   {mod, { hyparerl_app, []}},
-  {env, [{id, {{127,0,0,1}, 6000}},
-         {active_size, 5},
-         {passive_size, 30},
-         {arwl, 6},
-         {prwl, 3},
-         {k_active, 3},
-         {k_passive, 4},
-         {timeout, 1000},
-         {send_timeout, 1000},
-         {shuffle_period, 10000}
-        ]}
+  {env, [ ]}
  ]}.

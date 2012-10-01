@@ -3,7 +3,7 @@
 -behaviour(supervisor).
 
 %% API
--export([start_link/1]).
+-export([start_link/2]).
 
 %% Supervisor callbacks
 -export([init/1]).
@@ -12,8 +12,8 @@
 %%% API functions
 %%%===================================================================
 
-start_link(Options) ->
-    supervisor:start_link({local, ?MODULE}, ?MODULE, Options).
+start_link(Name, Options) ->
+    supervisor:start_link({local, Name}, ?MODULE, Options).
 
 %%%===================================================================
 %%% Supervisor callbacks

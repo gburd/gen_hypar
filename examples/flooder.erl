@@ -7,20 +7,28 @@
 -export([init/1, handle_cast/2, handle_call/3, handle_info/2,
         code_change/3, terminate/2]).
 
--export([start/1, start/2, join/1, broadcast/1]).
+-export([start_link/1, start_link/2, join/1, broadcast/1]).
 
 -record(state, {id, received_messages=[], peers=[]}).
 
-start(Port) ->
-    hyparerl:start_local(Port, ?MODULE),
-    gen_server:start({local, ?MODULE}, ?MODULE, [{{127,0,0,1},Port}], []).
+-define(CLUSTER, flood_cluster).
 
-start(Port, ContactPort) ->
-    start(Port),
-    join(ContactPort).
+start_link(Port) ->
+    Id = {{127,0,0,1},Port},
+    hyparerl:start(),    
+    gen_server:start_link({local, ?MODULE}, ?MODULE, [Id], []),
+    hyparerl:start_cluster(?CLUSTER, Id, ?MODULE, []).
+
+start_link(Port, ContactPort) ->
+    Ip = {127,0,0,1},
+    Id = {Ip,Port},
+    ContactNode = {Ip, ContactPort},
+    hyparerl:start(),
+    gen_server:start_link({local, ?MODULE}, ?MODULE, [Id], []),
+    hyparerl:start_cluster(?CLUSTER, Id, ?MODULE, [], [ContactNode]).
 
 join(Port) ->
-    hyparerl:join_cluster({{127,0,0,1}, Port}).
+    hyparerl:join_cluster(?CLUSTER, {{127,0,0,1}, Port}).
 
 broadcast(Packet) ->
     gen_server:cast(?MODULE, {broadcast, Packet}).

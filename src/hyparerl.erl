@@ -24,19 +24,16 @@
 -module(hyparerl).
 
 %% Operations
--export([start/3, start_local/2, join_cluster/1, shuffle/0]).
+-export([start/0, join_cluster/1, start_cluster/4, start_cluster/5, stop_cluster/1]).
 
 %% View
--export([get_peers/0, get_passive_peers/0]).
+-export([get_peers/1, get_passive_peers/1]).
 
 %% Send
 -export([send/2]).
 
 %% Identifier
 -export([encode_id/1, decode_id/1]).
-
-%% Testing
--export([local_id/1, join_local/1]).
 
 %%%%%%%%%
 %% API %%
@@ -46,44 +43,46 @@
 %% Operations %%
 %%%%%%%%%%%%%%%%
 
-start_local(Port, Target) ->
-    start({127,0,0,1}, Port, Target).
-
-%% @doc Start the hyparerl application at <em>IP:Port<em>. All messages received
-%%      from the overlay is sent to <em>Target</em>. The target process is also
-%%      notified when link changes happen with {link_up, {IP,Port}, Pid} and
-%%      {link_down, {IP,Port}}. Use hyparerl:send(Conn, Bin) to send binary data
-%%      to a peer.
-start(IP, Port, Target) ->
+%% @doc Start the hyparerl application.
+start() ->
     lager:start(),
     application:start(ranch),
     timer:sleep(100),
-
-    Id = {IP, Port},
-    application:load(hyparerl),
-    application:set_env(hyparerl, id, Id),
-    application:set_env(hyparerl, target, Target),
     application:start(hyparerl).
 
-%% @doc Join a cluster via <em>ContactNode</em>.
-join_cluster(ContactNode) ->
-    hypar_node:join_cluster(ContactNode).
+%% @doc Start an unconnected cluster node with name <em>Name</em>, with callback module
+%%      <em>Mod</em> and 
+start_cluster(Name, Identifier, Mod, Options) ->
+    Opts = [{name, Name}, {id, Identifier}, {target, Mod}
+            |options_defined(Options)],
+    supervisor:start_child(hyparerl_top_sup, child_spec(Name, Opts)).
 
-%% @doc Initate a shuffle request
-shuffle() ->
-    hypar_node:shuffle().
+%% @doc Start a cluster and try to connect to the contact nodes
+start_cluster(Name, Identifier, Mod, Options, ContactNodes) ->
+    Opts = [{name, Name}, {id, Identifier}, {target, Mod},
+            {contact_nodes, ContactNodes}|options_defined(Options)],
+    supervisor:start_child(hyparerl_top_sup, child_spec(Name, Opts)).
+
+%% @doc Stop a cluster <em>Name</em>.
+stop_cluster(Name) ->
+    supervisor:terminate_child(hyparerl_top_sup, {cluster, Name}),
+    ranch:stop_listener(Name).
+
+%% @doc Join a cluster via <em>ContactNodes</em> in order.
+join_cluster(ContactNodes) ->
+    hypar_node:join_cluster(ContactNodes).
 
 %%%%%%%%%%
 %% View %%
 %%%%%%%%%%
 
 %% @doc Retrive all current active peers
-get_peers() ->
-    hypar_node:get_peers().
+get_peers(Cluster) ->
+    hypar_node:get_peers(Cluster).
 
 %% @doc Retrive all current passive peers
-get_passive_peers() ->
-    hypar_node:get_passive_peers().
+get_passive_peers(Cluster) ->
+    hypar_node:get_passive_peers(Cluster).
 
 %%%%%%%%%%%%%
 %% Sending %%
@@ -105,14 +104,32 @@ encode_id(Id) ->
 decode_id(BId) ->
     connect:decode_id(BId).
 
-%%%%%%%%%%%%%
-%% Testing %%
-%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%
+%% Cluster-creation %%
+%%%%%%%%%%%%%%%%%%%%%%
 
-%% @doc Local identifier
-local_id(Port) ->
-    {{127,0,0,1}, Port}.
+%% @doc Check so all neccessary options are defined, otherwise default them.
+options_defined(Options) ->    
+    lists:foldl(fun({Opt, _}=OptPair, Acc0) ->
+                        case proplists:is_defined(Opt, Acc0)  of
+                            true -> Acc0;
+                            false -> [OptPair|Acc0]
+                        end
+                end, Options, default_options()).
 
-%% @doc Join a local node on given port
-join_local(Port) ->
-    hypar_node:join_cluster({{127,0,0,1},Port}).
+%% @doc Child specification
+child_spec(Name, Options) ->
+    {Name, {hyparerl_sup, start_link, [Options]}, permanent, 10000,
+     supervisor, [hyparerl_sup]}.
+    
+%% @doc Default options for the hyparview-application
+default_options() ->
+    [{active_size, 5},
+     {passive_size, 30},
+     {arwl, 6},
+     {prwl, 3},
+     {k_active, 3},
+     {k_passive, 4},
+     {shuffle_period, 10000},
+     {timeout, 10000},
+     {send_timeout, 1000}].

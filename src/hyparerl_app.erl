@@ -34,31 +34,7 @@
 %% ===================================================================
 
 start(_StartType, _StartArgs) ->
-    application:load(hyparerl),
-    Options0 = application:get_all_env(hyparerl),
-
-    %% Ensure that all nessecary parameters are defined, default those who
-    %% are not defined.
-    Options = lists:foldl(fun({Opt, _}=OptPair, Acc0) ->
-                                  case proplists:is_defined(Opt, Acc0)  of
-                                      true -> Acc0;
-                                      false -> [OptPair|Acc0]
-                                  end
-                          end, Options0, default_options()),
-    hyparerl_sup:start_link(Options).
+    hyparerl_top_sup:start_link().
 
 stop(_State) ->
     ok.
-
-%% @doc Default options for the hyparview-application
-default_options() ->
-    [{id, {{127,0,0,1}, 6000}},
-     {active_size, 5},
-     {passive_size, 30},
-     {arwl, 6},
-     {prwl, 3},
-     {k_active, 3},
-     {k_passive, 4},
-     {shuffle_period, 10000},
-     {timeout, 1000},
-     {send_timeout, 1000}].

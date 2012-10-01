@@ -36,17 +36,20 @@
 %% ===================================================================
 
 start_link(Options) ->
-    supervisor:start_link({local, ?MODULE}, ?MODULE, [Options]).
+    supervisor:start_link(?MODULE, [Options]).
 
 %% ===================================================================
 %% Supervisor callbacks
 %% ===================================================================
 
-init([Options]) ->
-    Node = {hypar_node,
-            {hypar_node, start_link, [Options]},
-            permanent, 5000, worker, [hypar_node]},
+init([Options0]) ->
+    Name = proplists:get_value(name, Options0),
+    ConnectName = list_to_atom(atom_to_list(Name) ++ "_connect"),
+    Options = [{connect_sup, ConnectName}|Options0],
+    HyparNode = {hypar_node,
+                 {hypar_node, start_link, [Name, Options]},
+                 permanent, 5000, worker, [hypar_node]},
     ConnectSup = {connect_sup,
-                  {connect_sup, start_link, [Options]},
+                  {connect_sup, start_link, [ConnectName, Options]},
                   permanent, 5000, supervisor, [connect_sup]},
-    {ok, { {one_for_all, 5, 10}, [Node, ConnectSup]}}.
+    {ok, { {one_for_all, 5, 10}, [HyparNode, ConnectSup]}}.

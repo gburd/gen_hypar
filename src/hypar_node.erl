@@ -35,14 +35,14 @@
 %%%%%%%%%%%%%
 
 %% Operations
--export([start_link/1, stop/0, join_cluster/1, shuffle/0]).
+-export([start_link/2, stop/1, join_cluster/2]).
 
 %% View related
--export([get_peers/0, get_passive_peers/0]).
+-export([get_peers/1, get_passive_peers/1]).
 
 %% Events
--export([join/1, join_reply/1, forward_join/3, neighbour/2, disconnect/1,
-         error/2, shuffle/4, shuffle_reply/1]).
+-export([join/2, join_reply/2, forward_join/4, neighbour/3, disconnect/2,
+         error/3, shuffle/5, shuffle_reply/2]).
 
 %% gen_server callbacks
 -export([init/1, terminate/2, code_change/3,
@@ -53,6 +53,7 @@
 %%%%%%%%%%%
 
 -record(st, {id            :: id(),              %% This nodes identifier
+             cluster       :: atom(),            %% Name of the cluster
              activev = []  :: active_view(),     %% The active view
              passivev = [] :: passive_view(),    %% The passive view
              last_xlist    :: xlist(),           %% The last shuffle xlist sent
@@ -69,92 +70,93 @@
 %% Operations %%
 %%%%%%%%%%%%%%%%
 
--spec start_link(Options :: options()) ->
+-spec start_link(Cluster :: atom(), Options :: options()) ->
                         {ok, pid()} | ignore | {error, any()}.
-%% @doc Start the <b>hypar_node</b> with <em>Options</em>.
-start_link(Options) ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, Options, []).
+%% @doc Start the cluster node <em>Cluster</em> with <em>Options</em>.
+start_link(Cluster, Options) ->
+    gen_server:start_link({local, Cluster}, ?MODULE, Options, []).
 
--spec stop() -> ok.
-%% @doc Stop the <b>hypar_node</b>.
-stop() ->
-    gen_server:call(?MODULE, stop).
+-spec stop(Cluster :: atom()) -> ok.
+%% @doc Stop the manager node for cluster <em>Name</em>.
+stop(Cluster) ->
+    gen_server:call(Cluster, stop).
 
--spec join_cluster(ContactNode :: id()) -> ok | {error, any()}.
-%% @doc Let the <b>hypar_node</b> join a cluster via <em>ContactNode</em>.
-join_cluster(ContactNode) ->
-    gen_server:call(?MODULE, {join_cluster, ContactNode}).
-
--spec shuffle() -> shuffle.
-%% @doc Force a node to do a shuffle operation
-shuffle() ->
-    ?MODULE ! shuffle.
+-spec join_cluster(Cluster :: atom(), ContactNodes :: list(id())) ->
+                          ok | could_not_connect.
+%% @doc Let the <em>Cluster</em> join other nodes via <em>ContactNodes</em>.
+join_cluster(Cluster, ContactNodes) ->
+    gen_server:call(Cluster, {join_cluster, ContactNodes}).
 
 %%%%%%%%%%%%%%%%%%%%%
 %% Peer operations %%
 %%%%%%%%%%%%%%%%%%%%%
 
--spec get_peers() -> list({id(), pid()}).
+-spec get_peers(Cluster :: atom()) -> list({id(), pid()}).
 %% @doc Get all the current active peers.
-get_peers() ->
-    gen_server:call(?MODULE, get_peers).
+get_peers(Cluster) ->
+    gen_server:call(Cluster, get_peers).
 
--spec get_passive_peers() -> passive_view().
+-spec get_passive_peers(Cluster :: atom()) -> passive_view().
 %% @doc Get all the current passive peers.
-get_passive_peers() ->
-    gen_server:call(?MODULE, get_passive_peers).
+get_passive_peers(Cluster) ->
+    gen_server:call(Cluster, get_passive_peers).
 
 %%%%%%%%%%%%
 %% Events %%
 %%%%%%%%%%%%
 
--spec join(Sender :: id()) -> ok | {error, already_in_active}.
-%% @doc Join <em>Sender</em>.
-join(Sender) ->
-    gen_server:call(?MODULE, {join, Sender}).
+-spec join(Cluster :: atom(), Sender :: id()) -> ok | {error, already_in_active}.
+%% @doc Join <em>Cluster</em> to <em>Sender</em>.
+join(Cluster, Sender) ->
+    gen_server:call(Cluster, {join, Sender}).
 
--spec forward_join(Sender :: id(), NewNode :: id(), TTL :: non_neg_integer()) ->
-                          ok.
-%% @doc Forward join <em>NewNode</em> from <em>Sender</em> with time to live
-%%      <em>TTL</em>.
-forward_join(Sender, NewNode, TTL) ->
-    gen_server:call(?MODULE, {forward_join, Sender, NewNode, TTL}).
+-spec forward_join(Cluster :: atom(), Sender :: id(), NewNode :: id(),
+                   TTL :: non_neg_integer()) -> ok.
+%% @doc A forward join event to <em>Cluster</em> with the newly joined node
+%%      <em>NewNode</em> from <em>Sender</em> with time to live <em>TTL</em>.
+forward_join(Cluster, Sender, NewNode, TTL) ->
+    gen_server:call(Cluster, {forward_join, Sender, NewNode, TTL}).
 
--spec join_reply(Sender :: id()) -> ok | {error, already_in_active}.
-%% @doc Join reply from <em>Sender</em>.
-join_reply(Sender) ->
-    gen_server:call(?MODULE, {join_reply, Sender}).
+-spec join_reply(Cluster :: atom(), Sender :: id()) ->
+                        ok | {error, already_in_active}.
+%% @doc A join reply event to <em>Cluster</em> from <em>Sender</em>.
+join_reply(Cluster, Sender) ->
+    gen_server:call(Cluster, {join_reply, Sender}).
 
--spec neighbour(Sender :: id(), Priority :: priority()) ->
+-spec neighbour(Cluster :: atom(), Sender :: id(), Priority :: priority()) ->
                        accept | decline | {error, already_in_active}.
-%% @doc Neighbour request from <em>Sender</em> with <em>Priority</em>.
-neighbour(Sender, Priority) ->
-    gen_server:call(?MODULE, {neighbour, Sender, Priority}).
+%% @doc Neighbour request event to <em>Cluster</em> from <em>Sender</em> with
+%%      <em>Priority</em>.
+neighbour(Cluster, Sender, Priority) ->
+    gen_server:call(Cluster, {neighbour, Sender, Priority}).
 
--spec disconnect(Sender :: id()) -> ok | {error, not_in_active}.
-%% @doc Disconnect <em>Sender</em>.
-disconnect(Sender) ->
-    gen_server:call(?MODULE, {disconnect, Sender}).
+-spec disconnect(Cluster :: atom(), Sender :: id()) ->
+                        ok | {error, not_in_active}.
+%% @doc Disconnect event to <em>Cluster</em> from <em>Sender</em>.
+disconnect(Cluster, Sender) ->
+    gen_server:call(Cluster, {disconnect, Sender}).
 
--spec error(Sender :: id(), Reason :: any()) -> ok | {error, not_in_active}.
-%% @doc Let the <b>hypar_node</b> know that <em>Sender</em> has failed
+-spec error(Cluster :: atom(), Sender :: id(), Reason :: any()) ->
+                   ok | {error, not_in_active}.
+%% @doc Error event to <em>Cluster</em> that <em>Sender</em> has failed
 %%      with <em>Reason</em>.
-error(Sender, Reason) ->
-    gen_server:call(?MODULE, {error, Sender, Reason}).
+error(Cluster, Sender, Reason) ->
+    gen_server:call(Cluster, {error, Sender, Reason}).
 
--spec shuffle(Sender :: id(), Requester :: id(), TTL :: non_neg_integer(),
-              XList :: xlist()) -> ok.
-%% @doc Shuffle request from <em>Sender</em>. The shuffle request originated in
-%%      node <em>Requester</em> and <em>XList</em> contains sample node
-%%      identifiers. The message has a time to live of <em>TTL</em>
-shuffle(Sender, Requester, TTL, XList) ->
-    gen_server:call(?MODULE, {shuffle, Sender, Requester, TTL, XList}).
+-spec shuffle(Cluster :: atom(), Sender :: id(), Requester :: id(),
+              TTL :: non_neg_integer(), XList :: xlist()) -> ok.
+%% @doc Shuffle request to <em>Cluster</em> from <em>Sender</em>. The shuffle
+%%      request originated in node <em>Requester</em> and <em>XList</em>
+%%      contains sample node identifiers. The message has a time to live of
+%%      <em>TTL</em>
+shuffle(Cluster, Sender, Requester, TTL, XList) ->
+    gen_server:call(Cluster, {shuffle, Sender, Requester, TTL, XList}).
 
--spec shuffle_reply(ReplyXList :: xlist()) -> ok.
-%% @doc Shuffle reply to shuffle request with reference <em>Ref</em> sent from
-%%      <em>Sender</em> that carries the sample list <em>ReplyXList</em>.
-shuffle_reply(ReplyXList) ->
-    gen_server:call(?MODULE, {shuffle_reply, ReplyXList}).
+-spec shuffle_reply(Cluster :: atom(), ReplyXList :: xlist()) -> ok.
+%% @doc Shuffle reply shuffle request from <em>Cluster</em> that carries sample
+%%      list <em>ReplyXList</em>.
+shuffle_reply(Cluster, ReplyXList) ->
+    gen_server:call(Cluster, {shuffle_reply, ReplyXList}).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks %%
@@ -172,30 +174,34 @@ init(Options) ->
     
     %% Find target process
     Target = proplists:get_value(target, Options),    
+    Cluster = proplists:get_value(name, Options),
 
     ConnectOpts = connect:initialize(Options),
 
     %% Start shuffle
     ShufflePeriod = proplists:get_value(shuffle_period, Options),
     shuffle_timer(ShufflePeriod),
+
+
+    Timeout = case proplists:is_defined(contact_nodes, Options) of
+                  true  -> 0;
+                  false -> infinity
+              end,
     
-    {ok, #st{id=ThisNode,
-             opts=Options,
-             connect_opts=ConnectOpts,
-             target=Target}}.
+    State = #st{id=ThisNode,
+                cluster=Cluster,
+                opts=Options -- ConnectOpts,
+                connect_opts=ConnectOpts,
+                target=Target},
+
+    {ok, State, Timeout}.
 
 %% Join a cluster via a given contact-node
 %% According to the paper this should only be done once. I don't really see
 %% why one would not be able to do multiple cluster joins to rejoin or to
 %% populate the active view faster
-handle_call({join_cluster, ContactNode}, _, S0) ->
-    case connect:join(ContactNode, S0#st.connect_opts) of
-        {ok, P} -> {reply, ok, add_node_active(P, S0)};
-        {error, Err} ->
-            lager:error("Join cluster via ~p failed with error ~p.~n",
-                        [ContactNode, Err]),
-            {reply, {error, Err}, S0}
-    end;
+handle_call({join_cluster, ContactNodes}, _, S0) ->
+    try_to_join(S0, ContactNodes);
 
 %% Add newly joined node to active view, propagate forward joins
 handle_call({join, Sender}, {Pid,_}, S0) ->
@@ -317,6 +323,16 @@ handle_call(stop, _, S) ->
     connect:stop(),
     {stop, normal, ok, S}.
 
+%% The node was supplied with contact nodes, try to connect to the cluster
+handle_info(timeout, S) ->
+    ContactNodes = proplists:get_value(contact_nodes, S#st.opts),
+    spawn(fun() ->
+                  %% Wait for connect_sup to start then join
+                  timer:sleep(100),
+                  ?MODULE:join_cluster(S#st.cluster, ContactNodes)
+          end),
+    {noreply, S};
+
 %% Timer message for periodic shuffle. Send of a shuffle request to a random
 %% peer in the active view. Ignore if we don't have any active connections.
 handle_info(shuffle, S) ->
@@ -343,8 +359,7 @@ handle_cast(_, S) ->
 code_change(_, S, _) ->
     {ok, S}.
 
-terminate(_, _) ->
-    connect:stop().
+terminate(_, _) -> ok.
 
 %%%%%%%%%%%%%%%%%%%%%
 %% Shuffle related %%
@@ -442,6 +457,16 @@ drop_random_active(S) ->
     connect:disconnect(Peer),
     
     S#st{activev=ActiveV, passivev=PassiveV}.
+
+try_to_join(S, []) -> {reply, could_not_connect, S};
+try_to_join(S, [ContactNode|Nodes]) ->
+    case connect:join(ContactNode, S#st.connect_opts) of
+        {ok, P} -> {reply, ok, add_node_active(P, S)};
+        {error, Err} ->
+            lager:error("Join cluster via ~p failed with error ~p.~n",
+                        [ContactNode, Err]),
+            try_to_join(S, Nodes)
+    end.
 
 -spec find_new_active(S :: #st{}) -> #st{}.
 %% @private
