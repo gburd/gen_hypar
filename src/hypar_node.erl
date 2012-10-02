@@ -91,7 +91,7 @@ join_cluster(Cluster, ContactNodes) ->
 %% Peer operations %%
 %%%%%%%%%%%%%%%%%%%%%
 
--spec get_peers(Cluster :: atom()) -> list({id(), pid()}).
+-spec get_peers(Cluster :: atom()) -> list(#peer{}).
 %% @doc Get all the current active peers.
 get_peers(Cluster) ->
     gen_server:call(Cluster, get_peers).
@@ -414,9 +414,9 @@ create_xlist(S) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%
 
 %% @doc Notify <em>Target</em> of a <b>link_up</b> event to node <em>To</em>.
-link_up(Target, To, Conn) ->
-    lager:info("Link up: ~p~n", [{To, Conn}]),
-    Target:link_up(To, Conn).
+link_up(Target, Peer) ->
+    lager:info("Link up: ~p~n", [Peer]),
+    Target:link_up(Peer).
 
 -spec add_node_active(Peer :: #peer{}, S0 :: #st{}) -> #st{}.
 %% @private
@@ -434,7 +434,7 @@ add_node_active(Peer, S0) ->
                     true  -> drop_random_active(S0);
                     false -> S0
                 end,
-            link_up(S#st.target, Id, Peer#peer.conn),
+            link_up(S#st.target, Peer),
             S#st{activev=[Peer|S#st.activev],
                  %% Make sure peer are not in both view.
                  passivev=lists:delete(Peer#peer.id, S#st.passivev)};

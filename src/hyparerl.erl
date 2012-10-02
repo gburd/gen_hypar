@@ -23,6 +23,8 @@
 %%%-------------------------------------------------------------------
 -module(hyparerl).
 
+-include("hyparerl.hrl").
+
 %% Operations
 -export([start/0, join_cluster/1, start_cluster/4, start_cluster/5, stop_cluster/1]).
 
@@ -53,14 +55,16 @@ start() ->
 %% @doc Start an unconnected cluster node with name <em>Name</em>, with callback module
 %%      <em>Mod</em> and 
 start_cluster(Name, Identifier, Mod, Options) ->
-    Opts = [{name, Name}, {id, Identifier}, {target, Mod}
-            |options_defined(Options)],
-    supervisor:start_child(hyparerl_top_sup, child_spec(Name, Opts)).
+    start_cluster(Name, Identifier, Mod, Options, []).
 
 %% @doc Start a cluster and try to connect to the contact nodes
 start_cluster(Name, Identifier, Mod, Options, ContactNodes) ->
-    Opts = [{name, Name}, {id, Identifier}, {target, Mod},
-            {contact_nodes, ContactNodes}|options_defined(Options)],
+    Opts0 = [{name, Name}, {id, Identifier}, {target, Mod}
+             |options_defined(Options)],
+    Opts = case ContactNodes of
+               []    -> Opts0;
+               Nodes -> [{contact_nodes, Nodes}|Opts0]
+           end,
     supervisor:start_child(hyparerl_top_sup, child_spec(Name, Opts)).
 
 %% @doc Stop a cluster <em>Name</em>.
@@ -89,8 +93,8 @@ get_passive_peers(Cluster) ->
 %%%%%%%%%%%%%
 
 %% @doc Send a binary message <em>Bin</em> over connection <em>Conn</em>.
-send(Conn, Bin) ->
-    connect:send(Conn, Bin).
+send(Peer, Bin) ->
+    connect:send(Peer#peer.conn, Bin).
 
 %%%%%%%%%%%%%%%%
 %% Identifier %%
@@ -104,9 +108,7 @@ encode_id(Id) ->
 decode_id(BId) ->
     connect:decode_id(BId).
 
-%%%%%%%%%%%%%%%%%%%%%%
-%% Cluster-creation %%
-%%%%%%%%%%%%%%%%%%%%%%
+%% Options
 
 %% @doc Check so all neccessary options are defined, otherwise default them.
 options_defined(Options) ->    
