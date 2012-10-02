@@ -37,6 +37,8 @@
 %% Identifier
 -export([encode_id/1, decode_id/1]).
 
+-export_type(id/0, peer/0, options/0).
+
 %%%%%%%%%
 %% API %%
 %%%%%%%%%
