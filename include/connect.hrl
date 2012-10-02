@@ -16,14 +16,13 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
-%%% @author Emil Falk <emil.falk.1988@gmail.com>
-%%% @copyright (C) 2012, Emil Falk
-%%% @title Include file for connect.erl
-%%% @doc Defines the messages sent over the network via the connect
-%%%      module
-%%%-------------------------------------------------------------------
+%% @author Emil Falk <emil.falk.1988@gmail.com>
+%% @copyright (C) 2012, Emil Falk
+%% @title Include file for connect.erl
+%% @doc Defines messages sent over the network via the connect module
+%% -------------------------------------------------------------------
 
-%% Byte representation of the different messages
+%% @doc Byte representation of the different messages
 -define(MESSAGE,      1). %% Payload message
 -define(JOIN,         2). %% Join message
 -define(FORWARDJOIN,  3). %% Forward join message

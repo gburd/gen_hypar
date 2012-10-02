@@ -1,7 +1,4 @@
 %% -------------------------------------------------------------------
-%%
-%% Top-level supervisor for hyparerl
-%%
 %% Copyright (c) 2012 Emil Falk  All Rights Reserved.
 %%
 %% This file is provided to you under the Apache License,
@@ -19,37 +16,30 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
+%% @author Emil Falk <emil.falk.1988@gmail.com>
+%% @copyright (C) 2012, Emil Falk
+%% @private
+%% @title Top level supervisor
+%% @doc Top level supervisor for hyparerl
+%% -------------------------------------------------------------------
+
 -module(hyparerl_sup).
 
 -author('Emil Falk <emil.falk.1988@gmail.com>').
 
 -behaviour(supervisor).
 
-%% API
 -export([start_link/1]).
-
-%% Supervisor callbacks
 -export([init/1]).
-
-%% ===================================================================
-%% API functions
-%% ===================================================================
 
 start_link(Options) ->
     supervisor:start_link(?MODULE, [Options]).
 
-%% ===================================================================
-%% Supervisor callbacks
-%% ===================================================================
-
-init([Options0]) ->
-    Name = proplists:get_value(name, Options0),
-    ConnectName = list_to_atom(atom_to_list(Name) ++ "_connect"),
-    Options = [{connect_sup, ConnectName}|Options0],
+init([Options]) ->
     HyparNode = {hypar_node,
-                 {hypar_node, start_link, [Name, Options]},
+                 {hypar_node, start_link, [Options]},
                  permanent, 5000, worker, [hypar_node]},
     ConnectSup = {connect_sup,
-                  {connect_sup, start_link, [ConnectName, Options]},
+                  {connect_sup, start_link, [Options]},
                   permanent, 5000, supervisor, [connect_sup]},
     {ok, { {one_for_all, 5, 10}, [HyparNode, ConnectSup]}}.

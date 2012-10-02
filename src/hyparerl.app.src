@@ -1,13 +1,13 @@
 {application, hyparerl,
  [
-  {description, "This application implements the HyparView peer-sampling service"},
+  {description, "Implementation of the HyparView peer-sampling service"},
   {vsn, "1"},
   {registered, []},
   {applications, [
                   kernel,
                   stdlib,
                   ranch,
-                  lager               
+                  lager
                  ]},
   {mod, { hyparerl_app, []}},
   {env, [ ]}

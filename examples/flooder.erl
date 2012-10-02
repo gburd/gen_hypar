@@ -1,34 +1,28 @@
 -module(flooder).
-
 -compile([export_all, debug_info]).
-
 -behaviour(gen_server).
 
+-include("hyparerl.hrl").
 -export([init/1, handle_cast/2, handle_call/3, handle_info/2,
         code_change/3, terminate/2]).
 
--export([start_link/1, start_link/2, join/1, broadcast/1]).
+-export([start_link/1, start_link/2, broadcast/1]).
 
 -record(state, {id, received_messages=[], peers=[]}).
 
--define(CLUSTER, flood_cluster).
-
 start_link(Port) ->
     Id = {{127,0,0,1},Port},
-    hyparerl:start(),    
-    gen_server:start_link({local, ?MODULE}, ?MODULE, [Id], []),
-    hyparerl:start_cluster(?CLUSTER, Id, ?MODULE, []).
+    {ok, Pid} = gen_server:start_link({local, ?MODULE}, ?MODULE, [Id], []),
+    hyparerl:start(Id, ?MODULE),
+    {ok, Pid}.
 
 start_link(Port, ContactPort) ->
     Ip = {127,0,0,1},
     Id = {Ip,Port},
     ContactNode = {Ip, ContactPort},
-    hyparerl:start(),
-    gen_server:start_link({local, ?MODULE}, ?MODULE, [Id], []),
-    hyparerl:start_cluster(?CLUSTER, Id, ?MODULE, [], [ContactNode]).
-
-join(Port) ->
-    hyparerl:join_cluster(?CLUSTER, {{127,0,0,1}, Port}).
+    {ok, Pid} = gen_server:start_link({local, ?MODULE}, ?MODULE, [Id], []),
+    hyparerl:start(Id, ?MODULE, [ContactNode]),
+    {ok, Pid}.
 
 broadcast(Packet) ->
     gen_server:cast(?MODULE, {broadcast, Packet}).
@@ -36,11 +30,11 @@ broadcast(Packet) ->
 init([Id]) ->
     {ok, #state{id=Id}}.
 
-handle_call({link_up, Id, Conn},_, S) ->
-    {reply, ok, S#state{peers=[{Id, Conn}|S#state.peers]}};
+handle_cast({link_up, Peer}, S) ->
+    {noreply, S#state{peers=[Peer|S#state.peers]}};
 
-handle_call({link_down, Id}, _, S) ->
-    {reply, ok, S#state{peers=lists:keydelete(Id, 1, S#state.peers)}}.
+handle_cast({link_down, Id},  S) ->
+    {noreply, S#state{peers=lists:keydelete(Id, #peer.id, S#state.peers)}};
     
 handle_cast({broadcast, Packet}, S) ->
     MId = create_message_id(S#state.id, Packet),
@@ -62,22 +56,24 @@ handle_cast({message, From, HPacket}, S) ->
             {noreply, S#state{received_messages=NewReceived}}
     end.
 
+handle_call(_,_,S) ->
+    {stop, not_used, S}.
+
 handle_info(_, S) ->
     {stop, not_used, S}.
 
 deliver(Packet) ->
     io:format("Packet deliviered:~n~p~n", [Packet]).
 
-
 %% Hyparerl callbacks
 deliver(Id, Bin) ->
     gen_server:cast(?MODULE, {message, Id, Bin}).
 
-link_up(To, Conn) ->
-    gen_server:call(?MODULE, {link_up, To, Conn}).
+link_up(Peer) ->
+    gen_server:cast(?MODULE, {link_up, Peer}).
 
 link_down(To) ->
-    gen_server:call(?MODULE, {link_down, To}).
+    gen_server:cast(?MODULE, {link_down, To}).
 
 create_message_id(Id, Bin) ->
     BNow = term_to_binary(now()),
@@ -90,11 +86,8 @@ header(MId, Payload) ->
 strap_header(<<MId:20/binary, Packet/binary>>) ->
     {MId, Packet}.
 
-multi_send([], _Packet) ->
-    ok;
-multi_send([{_,C}|Peers], Packet) ->
-    hyparerl:send(C, Packet),
-    multi_send(Peers, Packet).
+multi_send(Peers, Packet) ->
+    lists:foreach(fun(P) -> hyparerl:send(P, Packet) end, Peers).
 
 code_change(_,_,_) -> ok.
 

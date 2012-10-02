@@ -15,21 +15,21 @@
 %% specific language governing permissions and limitations
 %% under the License.
 %%
-%%%-------------------------------------------------------------------
-%%% @author Emil Falk <emil.falk.1988@gmail.com>
-%%% @copyright (C) 2012, Emil Falk
-%%% @title HyParView API
-%%% @doc Interface module to the HyParView peer samling service
-%%%-------------------------------------------------------------------
+%% -------------------------------------------------------------------
+%% @author Emil Falk <emil.falk.1988@gmail.com>
+%% @copyright (C) 2012, Emil Falk
+%% @title HyParView API
+%% @doc Interface module to the HyParView peer samling service
+%% -------------------------------------------------------------------
 -module(hyparerl).
 
 -include("hyparerl.hrl").
 
 %% Operations
--export([start/0, join_cluster/1, start_cluster/4, start_cluster/5, stop_cluster/1]).
+-export([start/0, start/2, start/3, join_cluster/1]).
 
 %% View
--export([get_peers/1, get_passive_peers/1]).
+-export([get_peers/0, get_passive_peers/0]).
 
 %% Send
 -export([send/2]).
@@ -37,7 +37,7 @@
 %% Identifier
 -export([encode_id/1, decode_id/1]).
 
--export_type(id/0, peer/0, options/0).
+-export_type([id/0, options/0]).
 
 %%%%%%%%%
 %% API %%
@@ -47,32 +47,24 @@
 %% Operations %%
 %%%%%%%%%%%%%%%%
 
-%% @doc Start the hyparerl application.
 start() ->
     lager:start(),
     application:start(ranch),
     timer:sleep(100),
     application:start(hyparerl).
 
-%% @doc Start an unconnected cluster node with name <em>Name</em>, with callback module
-%%      <em>Mod</em> and 
-start_cluster(Name, Identifier, Mod, Options) ->
-    start_cluster(Name, Identifier, Mod, Options, []).
+start(Identifier, Mod) ->
+    start(Identifier, Mod, []).
 
-%% @doc Start a cluster and try to connect to the contact nodes
-start_cluster(Name, Identifier, Mod, Options, ContactNodes) ->
-    Opts0 = [{name, Name}, {id, Identifier}, {target, Mod}
-             |options_defined(Options)],
-    Opts = case ContactNodes of
-               []    -> Opts0;
-               Nodes -> [{contact_nodes, Nodes}|Opts0]
-           end,
-    supervisor:start_child(hyparerl_top_sup, child_spec(Name, Opts)).
-
-%% @doc Stop a cluster <em>Name</em>.
-stop_cluster(Name) ->
-    supervisor:terminate_child(hyparerl_top_sup, {cluster, Name}),
-    ranch:stop_listener(Name).
+start(Identifier, Mod, ContactNodes) ->
+    application:load(hyparerl),
+    application:set_env(hyparerl, id, Identifier),
+    application:set_env(hyparerl, mod, Mod),
+    case ContactNodes of
+        [] -> ok;
+        _  -> application:set_env(hyparerl, contact_nodes, ContactNodes)
+    end,
+    start().
 
 %% @doc Join a cluster via <em>ContactNodes</em> in order.
 join_cluster(ContactNodes) ->
@@ -83,12 +75,12 @@ join_cluster(ContactNodes) ->
 %%%%%%%%%%
 
 %% @doc Retrive all current active peers
-get_peers(Cluster) ->
-    hypar_node:get_peers(Cluster).
+get_peers() ->
+    hypar_node:get_peers().
 
 %% @doc Retrive all current passive peers
-get_passive_peers(Cluster) ->
-    hypar_node:get_passive_peers(Cluster).
+get_passive_peers() ->
+    hypar_node:get_passive_peers().
 
 %%%%%%%%%%%%%
 %% Sending %%
@@ -109,31 +101,3 @@ encode_id(Id) ->
 %% @doc Decode a binary <em>BId</em> into an identifier.
 decode_id(BId) ->
     connect:decode_id(BId).
-
-%% Options
-
-%% @doc Check so all neccessary options are defined, otherwise default them.
-options_defined(Options) ->    
-    lists:foldl(fun({Opt, _}=OptPair, Acc0) ->
-                        case proplists:is_defined(Opt, Acc0)  of
-                            true -> Acc0;
-                            false -> [OptPair|Acc0]
-                        end
-                end, Options, default_options()).
-
-%% @doc Child specification
-child_spec(Name, Options) ->
-    {Name, {hyparerl_sup, start_link, [Options]}, permanent, 10000,
-     supervisor, [hyparerl_sup]}.
-    
-%% @doc Default options for the hyparview-application
-default_options() ->
-    [{active_size, 5},
-     {passive_size, 30},
-     {arwl, 6},
-     {prwl, 3},
-     {k_active, 3},
-     {k_passive, 4},
-     {shuffle_period, 10000},
-     {timeout, 10000},
-     {send_timeout, 1000}].

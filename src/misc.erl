@@ -1,7 +1,4 @@
 %% -------------------------------------------------------------------
-%%
-%% Utility module for hyparerl
-%%
 %% Copyright (c) 2012 Emil Falk  All Rights Reserved.
 %%
 %% This file is provided to you under the Apache License,
@@ -19,20 +16,16 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
-
-%% @doc Utility functions and/or functions that doesn't fit anywhere else.
-%%      Mostly random functions
+%% @author Emil Falk <emil.falk.1988@gmail.com>
+%% @copyright (C) 2012, Emil Falk
+%% @private
+%% @title Utility module for hyparerl
+%% @doc Contains some auxillary functions, mostly random-related.
+%% -------------------------------------------------------------------
 -module(misc).
 
--author('Emil Falk <emil.falk.1988@gmail.com>').
-
-%% API
 -export([drop_return/2, drop_nth/2, random_elem/1, take_n_random/2,
          drop_random/1, drop_n_random/2]).
-
-%%%===================================================================
-%%% API
-%%%===================================================================
 
 -spec drop_return(N :: pos_integer(), List :: list(T)) -> {T,list(T)}.
 %% @pure

@@ -16,11 +16,11 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
-%%% @author Emil Falk <emil.falk.1988@gmail.com>
-%%% @copyright (C) 2012, Emil Falk
-%%% @title Include file
-%%% @doc Defines records & types used in hyparerl
-%%%-------------------------------------------------------------------
+%% @author Emil Falk <emil.falk.1988@gmail.com>
+%% @copyright (C) 2012, Emil Falk
+%% @title Include file
+%% @doc Defines records & types used in hyparerl
+%% -------------------------------------------------------------------
 
 %% @doc An <em>identifier</em> is a tuple of an IP address and port number
 -type id() :: {inet:ip_address(),
@@ -51,9 +51,10 @@
         {k_active, pos_integer()}       | %% k samples from active view in shuffle
         {k_passive, pos_integer()}      | %% k samples from passive view in shuffle
         {shuffle_period, pos_integer()} | %% Shuffle period timer in milliseconds
-        {shuffle_buffer, pos_integer()} | %% Size of the shuffle cache
-        {notify, proc()}                | %% Process to nofity of up/down events
-        {receiver, proc()}.               %% Process that receives cluster messages
+        {contact_nodes, list(id())}     | %% Nodes to join a cluster via
+        {mod, module()}                 | %% Callback module with linkup/down and deliver functions
+        {timeout, timeout()}            | %% Receive timeout, when to consider nodes dead
+        {send_timeout, timeout()}.        %% Send timeout, when to consider nodes dead
 
 %% @doc A <em>peer</em> consists of an identifier and a corresponding pid
 -record(peer, {id  :: id(),
