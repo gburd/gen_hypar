@@ -91,7 +91,7 @@
 -include("connect.hrl").
 
 %% Connection state
--record(conn, {remote :: id(),          %% Identifier of the remote end
+-record(conn, {remote :: #peer{},          %% Identifier of the remote end
                socket :: inet:socket(), %% The socket
                data   :: binary(),      %% Incoming receive-buffer
                mod    :: module()       %% Callback module
@@ -181,7 +181,7 @@ init([incoming, LPid, Socket, Opts]) ->
 
 init([outgoing, Remote, Socket, Options]) ->
     C = initial_state(Socket, Options),
-    {ok, wait_for_socket, C#conn{remote=Remote}}.
+    {ok, wait_for_socket, C#conn{remote=#peer{id=Remote, conn=self()}}.
 
 %% Receive socket data, parse and take appropriate action
 handle_info({tcp, Socket, Data}, active, C) ->
@@ -356,8 +356,8 @@ handle_join(C, Timeout) ->
     case receive_id(C, Timeout) of
         {ok, Id} ->
             ok = hypar_node:join(Id),
-            inet:setopts(C#conn.socket, [{active, true}]),
-            {next_state, active, C#conn{remote=Id}};
+            socket_active(C#conn.socket),
+            {next_state, active, C#conn{remote=#peer{id=Id, conn=self()}};
         Err ->
             {stop, Err, C}
     end.
@@ -368,8 +368,8 @@ handle_join_reply(C, Timeout) ->
     case receive_id(C, Timeout) of
         {ok, Id} ->
             ok = hypar_node:join_reply(Id),
-            inet:setopts(C#conn.socket, [{active, true}]),
-            {next_state, active, C#conn{remote=Id}};
+            socket_active(C#conn.socket),
+            {next_state, active, C#conn{remote=#peer{id=Id, conn=self()}}};
         Err ->
             {stop, Err, C}
     end.
@@ -380,7 +380,7 @@ handle_join_reply(C, Timeout) ->
 handle_neighbour(C0, Timeout, Priority) ->
     case receive_id(C0, Timeout) of
         {ok, Id} ->
-            C = C0#conn{remote=Id},
+            C = C0#conn{remote=#peer{id=Id, conn=self()}},
             case hypar_node:neighbour(Id, Priority) of
                 accept  -> accept_neighbour(C);
                 decline -> decline_neighbour(C)
@@ -393,7 +393,7 @@ handle_neighbour(C0, Timeout, Priority) ->
 accept_neighbour(C) ->
     case gen_tcp:send(C#conn.socket, <<?ACCEPT>>) of
         ok ->
-            inet:setopts(C#conn.socket, [{active, true}]),
+            socket_active(C#conn.socket),
             {next_state, active, C};
         {error, Err} ->
             ok = hypar_node:error(C#conn.remote, Err),
@@ -441,7 +441,6 @@ handle_shuffle_reply(C, Timeout) ->
 %%      <em>Sender</em>.
 deliver(Mod, Sender, Bin) ->
     ok = Mod:deliver(Sender, Bin).
-
 
 -spec link_down(Mod :: module(), To :: id()) -> ok.
 %% @doc Notify callback module <em>Mod</em> about a link_down event.

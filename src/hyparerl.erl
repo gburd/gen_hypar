@@ -26,7 +26,7 @@
 -include("hyparerl.hrl").
 
 %% Operations
--export([start/0, start/2, start/3, join_cluster/1]).
+-export([start/0, start/1, join_cluster/1]).
 
 %% View
 -export([get_peers/0, get_passive_peers/0]).
@@ -53,17 +53,11 @@ start() ->
     timer:sleep(100),
     application:start(hyparerl).
 
-start(Identifier, Mod) ->
-    start(Identifier, Mod, []).
-
-start(Identifier, Mod, ContactNodes) ->
+start(Options) ->
     application:load(hyparerl),
-    application:set_env(hyparerl, id, Identifier),
-    application:set_env(hyparerl, mod, Mod),
-    case ContactNodes of
-        [] -> ok;
-        _  -> application:set_env(hyparerl, contact_nodes, ContactNodes)
-    end,
+    lists:foreach(fun({Par, Val}) ->
+                          application:set_env(hyparerl, Par, Val)
+                  end, Options),
     start().
 
 %% @doc Join a cluster via <em>ContactNodes</em> in order.

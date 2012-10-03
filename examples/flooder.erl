@@ -13,7 +13,7 @@
 start_link(Port) ->
     Id = {{127,0,0,1},Port},
     {ok, Pid} = gen_server:start_link({local, ?MODULE}, ?MODULE, [Id], []),
-    hyparerl:start(Id, ?MODULE),
+    hyparerl:start([{id, Id}, {mod, ?MODULE}]),
     {ok, Pid}.
 
 start_link(Port, ContactPort) ->
@@ -21,7 +21,7 @@ start_link(Port, ContactPort) ->
     Id = {Ip,Port},
     ContactNode = {Ip, ContactPort},
     {ok, Pid} = gen_server:start_link({local, ?MODULE}, ?MODULE, [Id], []),
-    hyparerl:start(Id, ?MODULE, [ContactNode]),
+    hyparerl:start([{id, Id}, {mod, ?MODULE}, {contact_nodes, [ContactNode]}]),
     {ok, Pid}.
 
 broadcast(Packet) ->
