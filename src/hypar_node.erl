@@ -33,7 +33,7 @@
 %%%===================================================================
 
 %% Operations
--export([start_link/1, stop/0, join_cluster/1,
+-export([start_link/1, stop/0, join_cluster/1, get_id/0,
          get_peers/0, get_passive_peers/0]).
 
 %% Incoming events
@@ -82,6 +82,10 @@ join_cluster(ContactNodes) when is_list(ContactNodes) ->
 %% @doc Try to join via the node <em>ContactNode</em>.
 join_cluster(ContactNode) ->
     gen_server:call(?MODULE, {join_cluster, [ContactNode]}).
+
+%% @doc Retrive the identifer of the node
+get_id() ->
+    gen_server:call(?MODULE, get_id).
 
 -spec get_peers() -> list(#peer{}).
 %% @doc Get all the current active peers.
@@ -167,17 +171,15 @@ init(Options) ->
 
     %% If there are defined contact nodes then we timeout after init and
     %% try to join them.
-    Timeout = case proplists:is_defined(contact_nodes, Options) of
-                  true  -> 0;
-                  false -> infinity
-              end,
-    
     State = #st{id=Myself,
                 opts=Options,
                 connect_opts=ConnectOpts,
                 mod=callback(Options)},
-
-    {ok, State, Timeout}.
+    
+    case proplists:is_defined(contact_nodes, Options) of
+        true  -> {ok, State, 0};
+        false -> {ok, State}
+    end.
 
 %% Join a cluster via given contact nodes
 handle_call({join_cluster, ContactNodes}, _, S0) ->
@@ -299,6 +301,10 @@ handle_call(get_peers, _, S) ->
 %% Return current passive peers
 handle_call(get_passive_peers, _, S) ->
     {reply, S#st.passivev, S};
+
+%% Return the identifier
+handle_call(get_id, _, S) ->
+    {reply, S#st.id, S};
 
 %% Stop the hypar_node
 handle_call(stop, _, S) ->
@@ -560,5 +566,5 @@ active_size(Opts)   -> proplists:get_value(active_size, Opts).
 passive_size(Opts)  -> proplists:get_value(passive_size, Opts).                     
 k_active(Opts)      -> proplists:get_value(k_active, Opts).
 k_passive(Opts)     -> proplists:get_value(k_passive, Opts).
-callback(Opts)       -> proplists:get_value(mod, Opts, ?MODULE).
+callback(Opts)       -> proplists:get_value(mod, Opts, noop).
 shuffle_period(Opts) -> proplists:get_value(shuffle_period, Opts).

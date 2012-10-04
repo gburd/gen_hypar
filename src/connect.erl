@@ -595,7 +595,7 @@ socket_active(Socket) -> inet:setopts(Socket, [{active, true}]).
 %% @pure
 %% @doc Same as hyparerl:myself/1. Retrive id from Options.
 myself(Opts)       -> proplists:get_value(id, Opts).
-callback(Opts)     -> proplists:get_value(mod, Opts).
+callback(Opts)     -> proplists:get_value(mod, Opts, noop).
 timeout(Opts)      -> proplists:get_value(timeout, Opts).
 send_timeout(Opts) -> proplists:get_value(send_timeout, Opts).
 

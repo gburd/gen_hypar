@@ -35,7 +35,7 @@
 -export([send/2]).
 
 %% Auxillary
--export([encode_id/1, decode_id/1]).
+-export([get_id/0, encode_id/1, decode_id/1]).
 
 %% Type
 -export_type([id/0]).
@@ -86,6 +86,11 @@ send(Peer, Message) ->
 %%%===================================================================
 %%% Auxillary
 %%%===================================================================
+
+%% @doc Retrive the identifier of the hypar node. Useful if the node was started
+%%      without a given one.
+get_id() ->
+    hypar_node:get_id().
 
 %% @doc Encode an identifier <em>Id</em> into a binary.
 encode_id(Id) ->
