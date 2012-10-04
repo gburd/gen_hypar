@@ -7,7 +7,7 @@ This is an implementation in Erlang of the [Hybrid Partial View][] membership pr
 ##Quickstart
 
 ###Firing up a node
-A node is defined by it's unique identifer `{Ip, Tuple}` on which the node is reachable.
+A node is defined by it's unique identifer `{Ip, Tuple}` on which it is reachable.
 
 To start a new node we call any of the start-functions:
 
@@ -17,7 +17,11 @@ To start a new node we call any of the start-functions:
 * `start/0` starts the node on a random port and tries to default an ip-address. It is of course configurable via the     usual application interface.
 * `start/1` starts with the list of options given. 
 
-To configure another ip address and port use the **id** option. See all options below. The options should be the same for all nodes in a cluster. 
+To configure another ip address and port use the **id** option. It's also possible to only define the ip or the port with the **ip** and **port**. If the whole identifier is not know it can be retrived using:
+
+               hyparerl:get_id()
+
+There are alot more options and all of them are listed at the [bottom](#application-options). The options should be the same for all nodes in a cluster and otherwise the semantics of the program is not well defined.
 
 ###Enter the cluster
 
@@ -76,17 +80,19 @@ As more nodes join more links will become available and eventually (if you for e
 
 And hopefully all nodes should receive that message. Try playing around with it, killing some nodes, joining others and sending messages in between. 
 
-###Other projects on top of hyparerl
-Check out [plumcast][], it's in early development. It is an implementation of the Plumtree protocol by the same guys. Plumcast builds a broadcast tree on top of hyparerl.
+##Other projects on top of hyparerl
+Check out [plumcast][], it's in early development. It is an implementation of the Plumtree protocol by the same guys. Plumcast builds a broadcast tree on top of hyparerl to reduce the network traffic without sacrificing to much.
 
 Also check out [floodcast][], also very early development, that will basically be a more serious implementation of the simple flooder example.
 
 [plumcast]: emfa/plumcast
 [floodcast]: emfa/floodcast
 
-###Application options
+##Application options
 <table>
- <tr><td> **id**             </td><td> The unique identifier. It is a tuple `{Ip, Port}`.</td><td>IP ∈ IfList<br>Port=Random</td></tr>
+ <tr><td> **id**             </td><td> The unique identifier. It is a tuple `{Ip, Port}`.</td><td>IP∈IfList<br>Port=Random</td></tr>
+ <tr><td> **ip**             </td><td> Define only the ip address. </td><td>IP∈IfList</td></tr>
+ <tr><td> **port**           </td><td> Define only the port. </td><td>Port=Random</td></tr>
  <tr><td> **mod**            </td><td> The callback module.</td><td>No-op</td></tr>
  <tr><td> **active_size**    </td><td> Maximum entries in the active view.</td><td>5</td></tr>
  <tr><td> **passive_size**   </td><td> Same as above but for passive view.</td><td>30</td></tr>
