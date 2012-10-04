@@ -1,4 +1,4 @@
-#!/usr/bin/escript
+#!/usr/bin/env escript
 %% -*- erlang -*-
 %%! -sname cmd -setcookie hypar
 
@@ -6,38 +6,44 @@
 
 %% Start a cluster running over a port range inclusive of node test
 %% They are connected with each other using 
-main(["start-cluster", FromStr, ToStr]) ->
-    From = erlang:list_to_integer(FromStr),
-    To = erlang:list_to_integer(ToStr),
+main(["start-cluster", NStr]) ->
+    N = erlang:list_to_integer(NStr),
 
     %% Construct the node-names
-    Ports = lists:seq(From, To),
-    NodeNames = [ "node"++erlang:integer_to_list(P) || Port <- Ports],
+    NodeNames = [ "node"++erlang:integer_to_list(I) || I <- lists:seq(1, N)],
 
     %% Start all nodes
-    lists:foreach(fun(Node) ->
-                          os:cmd("erl -detached -setcookie hypar -sname "++Node)
-                  end,  NodeNames),
+    StartPrefix = "erl -pa ebin/ deps/*/ebin/ -detached -setcookie hypar -sname ",
+    [ os:cmd(StartPrefix ++ Node) || Node <- NodeNames],
 
     %% Create the full node name
-    NodeAtoms = lists:map(fun erlang:list_to_atom/1, lists:map(fun(Node) -> Node++"@localhost" end, Nodes)),
-
-    NodeData = lists:zip(NodeAtoms, Ports)
+    Nodes = [erlang:list_to_atom(NodeName++"@localhost") || NodeName <- NodeNames],
 
     %% Let nodes spin up before connecting them
     timer:sleep(1000),
 
     %% Connect to all nodes
-    lists:foreach(fun net_kernel:connect/1, NodeAtoms),
+    lists:foreach(fun net_kernel:connect/1, Nodes),
 
     %% Let the nodes propagate cluster info
     timer:sleep(1000),
 
-    case length(nodes()) =:= length(NodeAtoms) of
+    %% Check that all are started and connected.
+    case length(nodes()) =:= length(Nodes) of
         true ->
-            io:format("Cluster started!\n"),
-            [ spawn(Node, fun() -> hyparerl:start
-        
+            [begin
+                 pong = net_adm:ping(Node),
+                 rpc:cast(Node, hyparerl, start, [])
+             end || Node <- Nodes],
+            io:format("Cluster started!~n"),
+            
+            %% Let the hyparerl applications spin up
+            timer:sleep(1000),
+
+            %% Let all of them join each other
+            Id = rpc:call(hd(Nodes), hyparerl, get_id, []),
+            [ok = rpc:call(Node, hyparerl, join_cluster, [Id]) || Node <- Nodes],
+            io:format("All nodes has join the cluster!~n");        
         false ->
             io:format("Could not connect all nodes, killing cluster\n"),
             kill_cluster()
@@ -48,8 +54,6 @@ main(["kill-cluster"]) ->
     kill_cluster();
 main(["list-cluster"]) ->
     io:format(os:cmd("pgrep -lf 'setcookie hypar -sname node'"));
-main(["attach", Node]) ->
-    os:cmd
 main(_) ->
         usage().
 
