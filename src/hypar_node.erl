@@ -77,11 +77,11 @@ stop() ->
 %% @doc Try to join a cluster via <em>ContactNodes</em>. Try them in the order
 %%      of the list.
 join_cluster(ContactNodes) when is_list(ContactNodes) ->
-    gen_server:call(?MODULE, {join_cluster, ContactNodes});
+    gen_server:call(?MODULE, {join_cluster, ContactNodes}, infinity);
 
 %% @doc Try to join via the node <em>ContactNode</em>.
 join_cluster(ContactNode) ->
-    gen_server:call(?MODULE, {join_cluster, [ContactNode]}).
+    gen_server:call(?MODULE, {join_cluster, [ContactNode]}, infinity).
 
 %% @doc Retrive the identifer of the node
 get_id() ->
@@ -477,7 +477,7 @@ add_passive_peer(Node, S) ->
     end.
 
 -spec node_ok(Node :: id(), Myself :: id(), ActiveV :: active_view(),
-              PassiveV :: passive_view()) -> boolean().                     
+              PassiveV :: passive_view()) -> boolean().
 %% @doc Check so that a node is not equal to myself and are not in any of
 %%      the views.
 node_ok(NodeId, Myself, ActiveV, PassiveV) ->
