@@ -4,7 +4,6 @@
 
 -export([connect_all/1]).
 
-
 %% Start a cluster running over a port range inclusive of node test
 %% They are connected with each other using 
 main(["start-cluster", FromStr, ToStr]) ->
@@ -12,15 +11,18 @@ main(["start-cluster", FromStr, ToStr]) ->
     To = erlang:list_to_integer(ToStr),
 
     %% Construct the node-names
-    Nodes = [ "node"++erlang:integer_to_list(Port) || Port <- lists:seq(From,To)],
+    Ports = lists:seq(From, To),
+    NodeNames = [ "node"++erlang:integer_to_list(P) || Port <- Ports],
 
     %% Start all nodes
     lists:foreach(fun(Node) ->
                           os:cmd("erl -detached -setcookie hypar -sname "++Node)
-                  end,  Nodes),
+                  end,  NodeNames),
 
     %% Create the full node name
     NodeAtoms = lists:map(fun erlang:list_to_atom/1, lists:map(fun(Node) -> Node++"@localhost" end, Nodes)),
+
+    NodeData = lists:zip(NodeAtoms, Ports)
 
     %% Let nodes spin up before connecting them
     timer:sleep(1000),
@@ -33,7 +35,9 @@ main(["start-cluster", FromStr, ToStr]) ->
 
     case length(nodes()) =:= length(NodeAtoms) of
         true ->
-            io:format("Cluster started!\n");
+            io:format("Cluster started!\n"),
+            [ spawn(Node, fun() -> hyparerl:start
+        
         false ->
             io:format("Could not connect all nodes, killing cluster\n"),
             kill_cluster()

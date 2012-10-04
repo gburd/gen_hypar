@@ -108,14 +108,7 @@ initialize(Options) ->
     case proplists:get_value(id, Options) of
         %% Try to default an ip and listen to a random port
         undefined ->
-            {ok, IfList} = inet:getif(),
-            L = {127,0,0,1},
-            {IP, _, _} = hd(lists:keydelete(L, 1, IfList)),
-            ListenOpts = [{ip, IP}, {port,0}],
-            COpts = filter_opts(Options),
-            {ok, _} = ranch:start_listener(hyparerl, 20, ranch_tcp, ListenOpts,
-                                           connect, COpts),
-            [{id, {IP, ranch:get_port(hyparerl)}}|COpts];
+            start_without_defined_id(Options);
         {IP, Port} ->
             ListenOpts = [{ip, IP}, {port,Port}],
             COpts = filter_opts(Options),
@@ -475,6 +468,24 @@ start_connection({RemoteIp, RemotePort}, Opts) ->
         {ok, Socket} -> {ok, Socket};
         Err -> Err
     end.
+
+%% @doc Start ranch without option id defined. Could instead choose to
+start_without_defined_id(Options) ->
+    ConnectOpts = filter_opts(Options),
+    IP = proplists:get_value(ip, Options, get_ip_from_iflist()),
+    IPOpts = [{ip, IP}],
+    ListenOpts = [{port, proplists:get_value(port, Options, 0)}|IPOpts],
+    {ok, _} = ranch:start_listener(hyparerl, 20, ranch_tcp,
+                                   ListenOpts, connect,
+                                   ConnectOpts),
+    [{id, {IP, ranch:get_port(hyparerl)}}|ConnectOpts].
+
+%% @doc Return the first ip address that isn't the loopback interface
+get_ip_from_iflist() ->
+    {ok, IfList} = inet:getif(),
+    L = {127,0,0,1},
+    {IP, _, _} = hd(lists:keydelete(L, 1, IfList)),
+    IP.
 
 -spec parse_packets(C :: #conn{}, Bin :: binary()) ->
                            {next_state, active, #conn{}} |
