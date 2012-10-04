@@ -81,7 +81,7 @@ As more nodes join more links will become available and eventually (if you for e
 And hopefully all nodes should receive that message. Try playing around with it, killing some nodes, joining others and sending messages in between. 
 
 ##Other projects on top of hyparerl
-Check out [plumcast][], it's in early development. It is an implementation of the Plumtree protocol by the same guys. Plumcast builds a broadcast tree on top of hyparerl to reduce the network traffic without sacrificing to much.
+Check out [plumcast][], it's in early development. It is an implementation of the Plumtree protocol developed by the same guys. Plumcast builds a broadcast tree on top of hyparerl to reduce the network traffic without sacrificing to much latency.
 
 Also check out [floodcast][], also very early development, that will basically be a more serious implementation of the simple flooder example.
 
