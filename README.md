@@ -53,16 +53,16 @@ When a binary `Message` is received from `Peer` `deliver/2` is called. Upon link
 
 ###Application options
 <table>
- <tr><td> **id**             </td><td> The unique identifier. It is a tuple `{Ip, Port}`.</td></tr>
- <tr><td> **mod**            </td><td> The callback module.</td></tr>
- <tr><td> **active_size**    </td><td> The size of the active view. Default 5. </td></tr>
- <tr><td> **passive_size**   </td><td> The size of the passive view. Default 30.</td></tr>
- <tr><td> **arwl**           </td><td> Active Random Walk Length. Default 6.</td></tr>
- <tr><td> **prwl**           </td><td> Passive Random Walk Length. Default 3.</td></tr>
- <tr><td> **k_active**       </td><td> The number of nodes sampled from the active view when doing a shuffle. Default 3.</td></tr>
- <tr><td> **k_passive**      </td><td> Same as above but with passive view. Default 4.</td></tr>
- <tr><td> **shuffle_period** </td><td> Cyclic period timer of when to do a shuffle in milliseconds. Default 10000.</td></tr>
- <tr><td> **timeout**        </td><td> Define the timeout value when receiving data, if a timeout occurs that node is considered dead. Default 10000.</td></tr>
- <tr><td> **send_timeout**   </td><td> Same as above but when data is sent. Default 10000.</td></tr>
- <tr><td> **contact_nodes**  </td><td> A list of nodes to try and join to. Default [].</td></tr>
+ <tr><td> **id**             </td><td> The unique identifier. It is a tuple `{Ip, Port}`.</td><td>IP = IfList entry<br>Port=Random</td></tr>
+ <tr><td> **mod**            </td><td> The callback module.</td></td>No-op<td></tr>
+ <tr><td> **active_size**    </td><td> Maximum entries in the active view.</td><td>5</td></tr>
+ <tr><td> **passive_size**   </td><td> Same as above but for passive view.</td>30</tr>
+ <tr><td> **arwl**           </td><td> Active Random Walk Length.</td><td>6</td></tr>
+ <tr><td> **prwl**           </td><td> Passive Random Walk Length.</td><td>3</td></tr>
+ <tr><td> **k_active**       </td><td> The number of nodes sampled from the active view when doing a shuffle.</td><td>3</td</tr>
+ <tr><td> **k_passive**      </td><td> Same as above but with passive view.</td><td>4</td></tr>
+ <tr><td> **shuffle_period** </td><td> Cyclic period timer of when to do a shuffle in milliseconds.</td><td>10000</td></tr>
+ <tr><td> **timeout**        </td><td> Define the timeout value when receiving data, if a timeout occurs that node is considered dead.</td><td>10000</td></tr>
+ <tr><td> **send_timeout**   </td><td> Same as above but when data is sent.</td><td>10000</td></tr>
+ <tr><td> **contact_nodes**  </td><td> A list current cluster members to join to.</td><td>[]</td></tr>
 </table
