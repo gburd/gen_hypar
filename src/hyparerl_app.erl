@@ -29,12 +29,7 @@
 
 start(_StartType, _StartArgs) ->
     Opts = application:get_all_env(hyparerl),
-    case sanity(Opts) of
-        true ->
-            hyparerl_sup:start_link(default_undefined(Opts));
-        false ->
-            throw({error, insane_options})
-    end.
+    hyparerl_sup:start_link(default_undefined(Opts)).
 
 stop(_State) ->
     ok.
@@ -48,13 +43,6 @@ default_undefined(Options) ->
                         end
                 end, Options, default_options()).
 
-%% @doc Check the santify of the options
-%% @todo Maybe also check that some values are in range?
-sanity(Options) ->
-    Needed = [id, mod], %% The rest can be defaulted
-    lists:all(fun(B) -> B end,
-              [lists:keymember(Opt, 1, Options) || Opt <- Needed]).
-        
 %% @doc Default options for the hyparview-application
 default_options() ->
     [{active_size, 5},

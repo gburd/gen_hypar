@@ -560,5 +560,5 @@ active_size(Opts)   -> proplists:get_value(active_size, Opts).
 passive_size(Opts)  -> proplists:get_value(passive_size, Opts).                     
 k_active(Opts)      -> proplists:get_value(k_active, Opts).
 k_passive(Opts)     -> proplists:get_value(k_passive, Opts).
-callback(Opts)       -> proplists:get_value(mod, Opts).    
+callback(Opts)       -> proplists:get_value(mod, Opts, ?MODULE).
 shuffle_period(Opts) -> proplists:get_value(shuffle_period, Opts).
