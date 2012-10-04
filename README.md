@@ -51,12 +51,45 @@ The callback option **mod** should be a module that defines three functions:
 
 When a binary `Message` is received from `Peer` `deliver/2` is called. Upon link changes when a `Peer` either goes up or down `link_up/1`, `link_down/1` are executed.
 
+###Example
+There is an example application included in examples/flooder.erl. flooder is a reliable flooding broadcaster, though very simple.
+
+               erlc -o ebin -I include/ examples/flooder.erl
+               erl -pa ebin/ -pa ebin/*/deps -eval 'flooder:start_link()'
+               ...
+               05:02:16.926 [info] Initializing: {{192,168,1,138},APort}...
+
+Then fire up a couple of terminals and in each of them connect them to each other or to the original node. `start_link/1` need only a port and connects locally.
+
+               erl -pa ebin/ -pa ebin/*/deps -eval 'flooder:start_link(APort)'
+               ...
+               05:03:12.416 [info] Initializing: {{192,168,1,138},AnotherPort}...
+               ...
+               05:03:12:523 [info] Link up: {peer, {{192,168,1,138},APort}}
+               
+As more nodes join more links will become available and eventually (if you for example join 6 nodes to the first one), start to go down also as nodes reach their maximum fanout. Then try to send a couple of messages from different nodes:
+       
+               1> flooder:broadcast(<<"PLEASE WORK, BRAIN SLEEP NEEDS!>>).
+               ok
+               2> Packet delivered:
+               <<"PLEASE WORK, BRAIN SLEEP NEEDS!>>
+
+And hopefully all nodes should receive that message. Try playing around with it, killing some nodes, joining others and sending messages in between. 
+
+###Other projects on top of hyparerl
+Check out [plumcast][], it's in early development. It is an implementation of the Plumtree protocol by the same guys. Plumcast builds a broadcast tree on top of hyparerl.
+
+Also check out [floodcast][], also very early development, that will basically be a more serious implementation of the simple flooder example.
+
+[plumcast]: emfa/plumcast
+[floodcast]: emfa/floodcast
+
 ###Application options
 <table>
- <tr><td> **id**             </td><td> The unique identifier. It is a tuple `{Ip, Port}`.</td><td>IP = IfList entry<br>Port=Random</td></tr>
- <tr><td> **mod**            </td><td> The callback module.</td></td>No-op<td></tr>
+ <tr><td> **id**             </td><td> The unique identifier. It is a tuple `{Ip, Port}`.</td><td>IP ∈ IfList<br>Port=Random</td></tr>
+ <tr><td> **mod**            </td><td> The callback module.</td><td>No-op</td></tr>
  <tr><td> **active_size**    </td><td> Maximum entries in the active view.</td><td>5</td></tr>
- <tr><td> **passive_size**   </td><td> Same as above but for passive view.</td>30</tr>
+ <tr><td> **passive_size**   </td><td> Same as above but for passive view.</td><td>30</td></tr>
  <tr><td> **arwl**           </td><td> Active Random Walk Length.</td><td>6</td></tr>
  <tr><td> **prwl**           </td><td> Passive Random Walk Length.</td><td>3</td></tr>
  <tr><td> **k_active**       </td><td> The number of nodes sampled from the active view when doing a shuffle.</td><td>3</td</tr>
@@ -65,4 +98,3 @@ When a binary `Message` is received from `Peer` `deliver/2` is called. Upon link
  <tr><td> **timeout**        </td><td> Define the timeout value when receiving data, if a timeout occurs that node is considered dead.</td><td>10000</td></tr>
  <tr><td> **send_timeout**   </td><td> Same as above but when data is sent.</td><td>10000</td></tr>
  <tr><td> **contact_nodes**  </td><td> A list current cluster members to join to.</td><td>[]</td></tr>
-</table
