@@ -8,7 +8,7 @@
 
 -export([start_link/1, start_link/2, broadcast/1]).
 
--record(state, {id, received_messages=[], peers=[]}).
+-record(state, {id, received_messages=gb_trees:new(), peers=[]}).
 
 start_link(Port) ->
     Id = {{127,0,0,1},Port},
@@ -33,8 +33,8 @@ init([Id]) ->
 handle_cast({link_up, Peer}, S) ->
     {noreply, S#state{peers=[Peer|S#state.peers]}};
 
-handle_cast({link_down, Id},  S) ->
-    {noreply, S#state{peers=lists:keydelete(Id, #peer.id, S#state.peers)}};
+handle_cast({link_down, Peer},  S) ->
+    {noreply, S#state{peers=lists:delete(Peer, S#state.peers)}};
     
 handle_cast({broadcast, Packet}, S) ->
     MId = create_message_id(S#state.id, Packet),
@@ -44,9 +44,8 @@ handle_cast({broadcast, Packet}, S) ->
     NewReceived = [MId|S#state.received_messages],
     {noreply, S#state{received_messages=NewReceived}};
 
-handle_cast({message, From, HPacket}, S) ->
-    {MId, Packet} = strap_header(HPacket),
-    case lists:member(MId, S#state.received_messages) of
+handle_cast({message, From, <<MId:20/binary, Packet/binary>>}, S) ->
+    case gb_trees:is_defined(MId, S#state.received_messages) of
         true  -> {noreply, S};
         false ->
             deliver(Packet),
@@ -62,6 +61,7 @@ handle_call(_,_,S) ->
 handle_info(_, S) ->
     {stop, not_used, S}.
 
+%% Delivery function
 deliver(Packet) ->
     io:format("Packet deliviered:~n~p~n", [Packet]).
 
@@ -72,19 +72,17 @@ deliver(Id, Bin) ->
 link_up(Peer) ->
     gen_server:cast(?MODULE, {link_up, Peer}).
 
-link_down(To) ->
-    gen_server:cast(?MODULE, {link_down, To}).
+link_down(Peer) ->
+    gen_server:cast(?MODULE, {link_down, Peer}).
 
+
+%% Internal
 create_message_id(Id, Bin) ->
-    BNow = term_to_binary(now()),
     BId = hyparerl:encode_id(Id),
-    crypto:sha(<<BNow/binary, BId/binary, Bin/binary>>).
+    crypto:sha(<<Bin/binary, BId/binary>>).
 
-header(MId, Payload) ->
-    <<MId/binary, Payload/binary>>.
-
-strap_header(<<MId:20/binary, Packet/binary>>) ->
-    {MId, Packet}.
+send_to_all_but(Packet, Peers, Peer) ->
+    multi_send(lists:delete(Peer, Peers, Packet).
 
 multi_send(Peers, Packet) ->
     lists:foreach(fun(P) -> hyparerl:send(P, Packet) end, Peers).

@@ -105,16 +105,27 @@
 %% @doc Start the ranch listener with <em>Options</em>.
 %% @todo Unsure if I should start the ranch listener here.
 initialize(Options) ->
-    {IP, Port} = proplists:get_value(id, Options),
+    case proplists:get_value(id, Options) of
+        %% Try to default an ip and listen to a random port
+        undefined ->
+            {ok, IfList} = inet:getif(),
+            L = {127,0,0,1},
+            {IP, _, _} = hd(lists:keydelete(L, 1, IfList)),
+            ListenOpts = [{ip, IP}, {port,0}],
+            COpts = filter_opts(Options),
+            {ok, _} = ranch:start_listener(hyparerl, 20, ranch_tcp, ListenOpts,
+                                           connect, COpts),
+            [{id, {IP, ranch:get_port(hyparerl)}}|COpts];
+        {IP, Port} ->
+            ListenOpts = [{ip, IP}, {port,Port}],
+            COpts = filter_opts(Options),
+            {ok, _} = ranch:start_listener(hyparerl, 20, ranch_tcp, ListenOpts,
+                                           connect, COpts),
+            COpts
+    end.
 
-    ListenOpts = [{ip, IP}, {port,Port}],
-    COpts = filter_opts(Options),
-    {ok, _} = ranch:start_listener(hyparerl, 20, ranch_tcp, ListenOpts,
-                                   connect, COpts),
-    COpts.
-
-%% @doc Send a binary message <em>Bin</em> to <em>Conn</em>.
-send(Conn, Bin) -> gen_fsm:send_event(Conn, {message, Bin}).
+%% @doc Send a binary message <em>Message</em> to <em>Conn</em>.
+send(Conn, Message) -> gen_fsm:send_event(Conn, {message, Message}).
 
 %% @doc Start an incoming connection via ranch
 start_link(LPid, Socket, _Transport, ConnectOpts) ->
@@ -181,7 +192,7 @@ init([incoming, LPid, Socket, Opts]) ->
 
 init([outgoing, Remote, Socket, Options]) ->
     C = initial_state(Socket, Options),
-    {ok, wait_for_socket, C#conn{remote=#peer{id=Remote, conn=self()}}.
+    {ok, wait_for_socket, C#conn{remote=peer(Remote)}}.
 
 %% Receive socket data, parse and take appropriate action
 handle_info({tcp, Socket, Data}, active, C) ->
@@ -224,9 +235,9 @@ terminate(_, _, _) ->
 %% @doc Active state
 %%      Four possibilities; Either it is a binary message, a forward-join,
 %%      a shuffle or a disconnect.
-active({message, Bin}, C) ->
-    Len = byte_size(Bin),
-    try_send(C, <<?MESSAGE, Len:32/integer, Bin/binary>>);
+active({message, Message}, C) ->
+    Len = byte_size(Message),
+    try_send(C, [?MESSAGE, <<Len:32/integer>>, Message]);
 
 active({forward_join, Req, TTL}, C) ->
     BReq = encode_id(Req),
@@ -255,7 +266,7 @@ wait_incoming(timeout, {C, Opts}) ->
     Socket = C#conn.socket,
     SendTimeout = proplists:get_value(send_timeout, Opts),
     Timeout = proplists:get_value(timeout, Opts),
-    inet:setopts(Socket, [{nodelay, true}, {send_timeout, SendTimeout}]),
+    inet:setopts(Socket, [{send_timeout, SendTimeout}]),
     %% Read 1 bytes to determine what kind of message it is
     case gen_tcp:recv(Socket, 1 , Timeout) of
         {ok, Bin} ->
@@ -271,7 +282,7 @@ wait_incoming(timeout, {C, Opts}) ->
 
 %% Wait for the go-ahead from the hypar_node starting the connection
 wait_for_socket({go_ahead, Socket}, C=#conn{socket=Socket}) ->
-    inet:setopts(Socket, [{active, true}]),
+    socket_active(Socket),
     {next_state, active, C}.
 
 %% Wait for the go-ahead from the ranch server
@@ -355,9 +366,10 @@ new_peer(Remote, Socket) ->
 handle_join(C, Timeout) ->
     case receive_id(C, Timeout) of
         {ok, Id} ->
-            ok = hypar_node:join(Id),
+            Remote = peer(Id),
+            ok = hypar_node:join(Remote),
             socket_active(C#conn.socket),
-            {next_state, active, C#conn{remote=#peer{id=Id, conn=self()}};
+            {next_state, active, C#conn{remote=Remote}};
         Err ->
             {stop, Err, C}
     end.
@@ -367,9 +379,10 @@ handle_join(C, Timeout) ->
 handle_join_reply(C, Timeout) -> 
     case receive_id(C, Timeout) of
         {ok, Id} ->
-            ok = hypar_node:join_reply(Id),
+            Remote = peer(Id),
+            ok = hypar_node:join_reply(Remote),
             socket_active(C#conn.socket),
-            {next_state, active, C#conn{remote=#peer{id=Id, conn=self()}}};
+            {next_state, active, C#conn{remote=Remote}};
         Err ->
             {stop, Err, C}
     end.
@@ -380,7 +393,8 @@ handle_join_reply(C, Timeout) ->
 handle_neighbour(C0, Timeout, Priority) ->
     case receive_id(C0, Timeout) of
         {ok, Id} ->
-            C = C0#conn{remote=#peer{id=Id, conn=self()}},
+            Remote = peer(Id),
+            C = C0#conn{remote=Remote},
             case hypar_node:neighbour(Id, Priority) of
                 accept  -> accept_neighbour(C);
                 decline -> decline_neighbour(C)
@@ -442,7 +456,7 @@ handle_shuffle_reply(C, Timeout) ->
 deliver(Mod, Sender, Bin) ->
     ok = Mod:deliver(Sender, Bin).
 
--spec link_down(Mod :: module(), To :: id()) -> ok.
+-spec link_down(Mod :: module(), To :: #peer{}) -> ok.
 %% @doc Notify callback module <em>Mod</em> about a link_down event.
 link_down(Mod, To) ->
     lager:info("Link down: ~p~n", [To]), 
@@ -517,14 +531,15 @@ receive_id(C, Timeout) ->
         Err -> Err
     end.
 
--spec try_send(C :: #conn{}, Bin :: binary()) ->
+-spec try_send(C :: #conn{}, Message :: binary() | iolist()) ->
                       {next_state, active, #conn{}} |
                       {stop, {error, any()}, #conn{}}.
-%% @doc Try to send <em>Bin</em> over active connection <em>C</em>. Move
+%% @doc Try to send <em>Message</em> over active connection <em>C</em>. Move
 %%      to active if successful otherwise stop.
-try_send(C, Bin) ->
-    case gen_tcp:send(C#conn.socket, Bin) of
-        ok -> {next_state, active, C};
+try_send(C, Message) ->
+    case gen_tcp:send(C#conn.socket, Message) of
+        ok ->
+            {next_state, active, C};
         {error, Reason} -> 
             ok = hypar_node:error(C#conn.remote, Reason),
             {stop, {error, Reason}, C}
@@ -583,6 +598,12 @@ myself(Opts)       -> proplists:get_value(id, Opts).
 callback(Opts)     -> proplists:get_value(mod, Opts).
 timeout(Opts)      -> proplists:get_value(timeout, Opts).
 send_timeout(Opts) -> proplists:get_value(send_timeout, Opts).
+
+-spec peer(Identifier :: id()) -> #peer{}.
+%% @pure
+%% @doc Wrapper around a peer-record.
+peer(Identifier) ->
+    #peer{id=Identifier, conn=self()}.
 
 %%%===================================================================
 %%% Not used

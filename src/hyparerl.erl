@@ -28,31 +28,30 @@
 %% Operations
 -export([start/0, start/1, join_cluster/1]).
 
-%% View
+%% Views
 -export([get_peers/0, get_passive_peers/0]).
 
 %% Send
 -export([send/2]).
 
-%% Identifier
+%% Auxillary
 -export([encode_id/1, decode_id/1]).
 
--export_type([id/0, options/0]).
+%% Type
+-export_type([id/0]).
 
-%%%%%%%%%
-%% API %%
-%%%%%%%%%
+%%%===================================================================
+%%% Operations
+%%%===================================================================
 
-%%%%%%%%%%%%%%%%
-%% Operations %%
-%%%%%%%%%%%%%%%%
-
+%% @doc Start the hyparerl application
 start() ->
     lager:start(),
     application:start(ranch),
     timer:sleep(100),
     application:start(hyparerl).
 
+%% @doc Start the hyparerl application with <em>Options</em>.
 start(Options) ->
     application:load(hyparerl),
     lists:foreach(fun({Par, Val}) ->
@@ -64,9 +63,9 @@ start(Options) ->
 join_cluster(ContactNodes) ->
     hypar_node:join_cluster(ContactNodes).
 
-%%%%%%%%%%
-%% View %%
-%%%%%%%%%%
+%%%===================================================================
+%%% Views
+%%%===================================================================
 
 %% @doc Retrive all current active peers
 get_peers() ->
@@ -76,17 +75,17 @@ get_peers() ->
 get_passive_peers() ->
     hypar_node:get_passive_peers().
 
-%%%%%%%%%%%%%
-%% Sending %%
-%%%%%%%%%%%%%
+%%%===================================================================
+%%% Send
+%%%===================================================================
 
-%% @doc Send a binary message <em>Bin</em> over connection <em>Conn</em>.
-send(Peer, Bin) ->
-    connect:send(Peer#peer.conn, Bin).
+%% @doc Send an iolist or binary <em>Message</em> over connection <em>Conn</em>.
+send(Peer, Message) ->
+    connect:send(Peer#peer.conn, Message).
 
-%%%%%%%%%%%%%%%%
-%% Identifier %%
-%%%%%%%%%%%%%%%%
+%%%===================================================================
+%%% Auxillary
+%%%===================================================================
 
 %% @doc Encode an identifier <em>Id</em> into a binary.
 encode_id(Id) ->
