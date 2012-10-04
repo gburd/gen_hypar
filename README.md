@@ -36,20 +36,20 @@ When the node has joined the cluster the current peers can be retrived with:
                hyparerl:get_peers()
 
 ###Sending data
-To send data you first need to have a peer retrived either via the above method or using the callback functions explained below. Anyhow the function to use is:
+To send data you first need to have a `Peer` retrived either via the above method or using the callback functions explained below. Anyhow the function to use is:
                
                hyparerl:send(Peer, Message)
 
-The message can be either a `binary()` or an `iolist()`. 
+The `Message` can be either a `binary()` or an `iolist()`. 
 
 ###Retriving data and the callback module
-The callback module defined by the option **mod**. The callback module should define the three functions:
+The callback option **mod** should be a module that defines three functions:
                
                Mod:deliver(Peer, Message) -> ok
                Mod:link_up(Peer)          -> ok.
                Mod:link_down(Peer         -> ok
 
-When a binary *Message* is received from *Peer* `deliver/2` is called. Upon link changes when a *Peer* either goes up or down `link_up/1`, `link_down/1` are executed.
+When a binary `Message` is received from `Peer` `deliver/2` is called. Upon link changes when a `Peer` either goes up or down `link_up/1`, `link_down/1` are executed.
 
 ###Application options
 <table>
@@ -64,5 +64,5 @@ When a binary *Message* is received from *Peer* `deliver/2` is called. Upon link
  <tr><td> **shuffle_period** </td><td> Cyclic period timer of when to do a shuffle in milliseconds. Default 10000.</td></tr>
  <tr><td> **timeout**        </td><td> Define the timeout value when receiving data, if a timeout occurs that node is considered dead. Default 10000.</td></tr>
  <tr><td> **send_timeout**   </td><td> Same as above but when data is sent. Default 10000.</td></tr>
- <tr><td> **contact_nodes**  </td><td> A list of nodes to try and join to. Default [].
+ <tr><td> **contact_nodes**  </td><td> A list of nodes to try and join to. Default [].</td></tr>
 </table
