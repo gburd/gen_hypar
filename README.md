@@ -36,33 +36,33 @@ When the node has joined the cluster the current peers can be retrived with:
                hyparerl:get_peers()
 
 ###Sending data
-To send data you first need to have a peer retrived either via the above method or using the callback functions explained below. Anyhow the function to use is:
+To send data you first need to have a `Peer` retrived either via the above method or using the callback functions explained below. Anyhow the function to use is:
                
                hyparerl:send(Peer, Message)
 
-The message can be either a `binary()` or an `iolist()`. 
+The `Message` can be either a `binary()` or an `iolist()`. 
 
 ###Retriving data and the callback module
-The callback module defined by the option **mod**. The callback module should define the three functions:
+The callback option **mod** should be a module that defines three functions:
                
                Mod:deliver(Peer, Message) -> ok
                Mod:link_up(Peer)          -> ok.
                Mod:link_down(Peer         -> ok
 
-When a binary *Message* is received from *Peer* `deliver/2` is called. Upon link changes when a *Peer* either goes up or down `link_up/1`, `link_down/1` are executed.
+When a binary `Message` is received from `Peer` `deliver/2` is called. Upon link changes when a `Peer` either goes up or down `link_up/1`, `link_down/1` are executed.
 
 ###Application options
 <table>
- <tr><td> **id**             </td><td> The unique identifier. It is a tuple `{Ip, Port}`.</td></tr>
- <tr><td> **mod**            </td><td> The callback module.</td></tr>
- <tr><td> **active_size**    </td><td> The size of the active view. Default 5. </td></tr>
- <tr><td> **passive_size**   </td><td> The size of the passive view. Default 30.</td></tr>
- <tr><td> **arwl**           </td><td> Active Random Walk Length. Default 6.</td></tr>
- <tr><td> **prwl**           </td><td> Passive Random Walk Length. Default 3.</td></tr>
- <tr><td> **k_active**       </td><td> The number of nodes sampled from the active view when doing a shuffle. Default 3.</td></tr>
- <tr><td> **k_passive**      </td><td> Same as above but with passive view. Default 4.</td></tr>
- <tr><td> **shuffle_period** </td><td> Cyclic period timer of when to do a shuffle in milliseconds. Default 10000.</td></tr>
- <tr><td> **timeout**        </td><td> Define the timeout value when receiving data, if a timeout occurs that node is considered dead. Default 10000.</td></tr>
- <tr><td> **send_timeout**   </td><td> Same as above but when data is sent. Default 10000.</td></tr>
- <tr><td> **contact_nodes**  </td><td> A list of nodes to try and join to. Default [].
+ <tr><td> **id**             </td><td> The unique identifier. It is a tuple `{Ip, Port}`.</td><td>IP = IfList entry<br>Port=Random</td></tr>
+ <tr><td> **mod**            </td><td> The callback module.</td></td>No-op<td></tr>
+ <tr><td> **active_size**    </td><td> Maximum entries in the active view.</td><td>5</td></tr>
+ <tr><td> **passive_size**   </td><td> Same as above but for passive view.</td>30</tr>
+ <tr><td> **arwl**           </td><td> Active Random Walk Length.</td><td>6</td></tr>
+ <tr><td> **prwl**           </td><td> Passive Random Walk Length.</td><td>3</td></tr>
+ <tr><td> **k_active**       </td><td> The number of nodes sampled from the active view when doing a shuffle.</td><td>3</td</tr>
+ <tr><td> **k_passive**      </td><td> Same as above but with passive view.</td><td>4</td></tr>
+ <tr><td> **shuffle_period** </td><td> Cyclic period timer of when to do a shuffle in milliseconds.</td><td>10000</td></tr>
+ <tr><td> **timeout**        </td><td> Define the timeout value when receiving data, if a timeout occurs that node is considered dead.</td><td>10000</td></tr>
+ <tr><td> **send_timeout**   </td><td> Same as above but when data is sent.</td><td>10000</td></tr>
+ <tr><td> **contact_nodes**  </td><td> A list current cluster members to join to.</td><td>[]</td></tr>
 </table
