@@ -1,6 +1,6 @@
 #!/usr/bin/env escript
 %% -*- erlang -*-
-%%! -sname cmd -setcookie hypar
+%%! -sname cmd -setcookie hypar -hidden
 
 -export([connect_all/1]).
 
@@ -29,25 +29,19 @@ main(["start-cluster", NStr]) ->
     timer:sleep(1000),
 
     %% Check that all are started and connected.
-    case length(nodes()) =:= length(Nodes) of
-        true ->
-            [begin
-                 pong = net_adm:ping(Node),
-                 rpc:cast(Node, hyparerl, start, [])
-             end || Node <- Nodes],
-            io:format("Cluster started!~n"),
+    [begin
+         pong = net_adm:ping(Node),
+         rpc:cast(Node, hyparerl, start, [])
+     end || Node <- Nodes],
+    io:format("Cluster started!~n"),
             
-            %% Let the hyparerl applications spin up
-            timer:sleep(1000),
+    %% Let the hyparerl applications spin up
+    timer:sleep(1000),
 
-            %% Let all of them join each other
-            Id = rpc:call(hd(Nodes), hyparerl, get_id, []),
-            [ok = rpc:call(Node, hyparerl, join_cluster, [Id]) || Node <- Nodes],
-            io:format("All nodes has join the cluster!~n");        
-        false ->
-            io:format("Could not connect all nodes, killing cluster\n"),
-            kill_cluster()
-    end;
+    %% Let all of them join each other
+    Id = rpc:call(hd(Nodes), hyparerl, get_id, []),
+    {_,[]} = rpc:multicall(tl(Nodes), hyparerl, join_cluster, [Id], 10000),
+    io:format("All nodes has join the cluster!~n");
 main(["start-cluster"|_]) ->
     usage(start_cluster);
 main(["kill-cluster"]) ->
