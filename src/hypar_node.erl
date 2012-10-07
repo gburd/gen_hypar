@@ -363,7 +363,7 @@ terminate(_, _) -> ok.
 %%      passive view.
 add_active_peer(Peer, S0) ->
     NodeId = Peer#peer.id,
-    #st{id=Myself, activev=ActiveV0, opts=Opts, mod=Mod} = S0,
+    #st{id=Myself, activev=ActiveV0, opts=Opts} = S0,
         
     case NodeId =/= Myself andalso
         not lists:keymember(NodeId, #peer.id, ActiveV0) of
@@ -372,7 +372,6 @@ add_active_peer(Peer, S0) ->
                     true  -> drop_random_active(S0);
                     false -> S0
                 end,
-            link_up(Mod, Peer),
             S#st{activev=[Peer|S#st.activev],
                  %% Make sure peer are not in both view.
                  passivev=lists:delete(Peer#peer.id, S#st.passivev)};
@@ -433,11 +432,6 @@ find_neighbour(Priority, PassiveV0, ConnectOpts, Tried) ->
             lager:error("Neighbour error ~p to ~p.~n", [Err, Node]),
             find_neighbour(Priority, Passive, ConnectOpts, Tried) 
     end.
-
-%% @doc Notify callback module <em>Mod</em> of a link_up event.
-link_up(Mod, Peer) ->
-    lager:info("Link up: ~p~n", [Peer]),
-    Mod:link_up(Peer).
 
 -spec try_to_join(S :: #st{}, list(id())) ->
                          ok | {error, could_not_connect}.

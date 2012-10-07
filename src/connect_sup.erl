@@ -33,7 +33,7 @@ start_link(Options) ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, Options).
 
 init(Options) ->
-    Connect = {connect, {connect, start_link, [connect:filter_opts(Options)]},
+    Connect = {connect, {connect, start_link, [opts:connect_opts(Options)]},
                temporary, brutal_kill, worker, [connect]},
     
     {ok, {{simple_one_for_one, 1000, 3600}, [Connect]}}.

@@ -3,7 +3,6 @@
 -compile([export_all, debug_info]).
 -behaviour(gen_server).
 
--include("hyparerl.hrl").
 -export([init/1, handle_cast/2, handle_call/3, handle_info/2,
         code_change/3, terminate/2]).
 
@@ -29,8 +28,7 @@ get_peers() ->
 broadcast(Packet) ->
     gen_server:cast(?MODULE, {broadcast, Packet}).
 
-init([]) ->
-    
+init([]) ->    
     {ok, #state{id=hyparerl:get_id(), peers=hyparerl:get_peers()}}.
 
 handle_cast({link_up, Peer}, S) ->
