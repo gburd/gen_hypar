@@ -85,17 +85,17 @@ join_cluster(ContactNode) ->
 
 %% @doc Retrive the identifer of the node
 get_id() ->
-    gen_server:call(?MODULE, get_id).
+    gen_server:call(?MODULE, get_id, infinity).
 
 -spec get_peers() -> list(#peer{}).
 %% @doc Get all the current active peers.
 get_peers() ->
-    gen_server:call(?MODULE, get_peers).
+    gen_server:call(?MODULE, get_peers, infinity).
 
 -spec get_passive_peers() -> passive_view().
 %% @doc Get all the current passive peers.
 get_passive_peers() ->
-    gen_server:call(?MODULE, get_passive_peers).
+    gen_server:call(?MODULE, get_passive_peers, infinity).
 
 %%%===================================================================
 %%% Incoming events
@@ -104,35 +104,35 @@ get_passive_peers() ->
 -spec join(Peer :: #peer{}) -> ok.
 %% @doc Join <em>Peer</em> to the node.
 join(Peer) ->
-    gen_server:call(?MODULE, {join, Peer}).
+    gen_server:call(?MODULE, {join, Peer}, infinity).
 
 -spec forward_join(Peer :: #peer{}, NewNode :: id(),
                    TTL :: non_neg_integer()) -> ok.
 %% @doc A forward join event with the newly joined node <em>NewNode</em> from
 %%      <em>Peer</em> with time to live <em>TTL</em>.
 forward_join(Peer, NewNode, TTL) ->
-    gen_server:call(?MODULE, {forward_join, Peer, NewNode, TTL}).
+    gen_server:cast(?MODULE, {forward_join, Peer, NewNode, TTL}).
 
 -spec join_reply(Peer :: #peer{}) -> ok.
 %% @doc A join reply from <em>Peer</em>.
 join_reply(Peer) ->
-    gen_server:call(?MODULE, {join_reply, Peer}).
+    gen_server:call(?MODULE, {join_reply, Peer}, infinity).
 
 -spec neighbour(Peer :: #peer{}, Priority :: priority()) ->
                        accept | decline.
 %% @doc Neighbour request from <em>Peer</em> with <em>Priority</em>.
 neighbour(Peer, Priority) ->
-    gen_server:call(?MODULE, {neighbour, Peer, Priority}).
+    gen_server:call(?MODULE, {neighbour, Peer, Priority}, infinity).
 
 -spec disconnect(Peer :: #peer{}) -> ok.
 %% @doc Disconnect from <em>Peer</em>.
 disconnect(Peer) ->
-    gen_server:call(?MODULE, {disconnect, Peer}).
+    gen_server:cast(?MODULE, {disconnect, Peer}).
 
 -spec error(Peer :: #peer{}, Reason :: any()) -> ok.
 %% @doc <em>Peer</em> has failed with <em>Reason</em>.
 error(Peer, Reason) ->
-    gen_server:call(?MODULE, {error, Peer, Reason}).
+    gen_server:cast(?MODULE, {error, Peer, Reason}).
 
 -spec shuffle(Peer :: #peer{}, Requester :: id(), TTL :: non_neg_integer(),
               XList :: xlist()) -> ok.
@@ -140,12 +140,12 @@ error(Peer, Reason) ->
 %%      in node <em>Requester</em> and <em>XList</em> contains sample node
 %%      identifiers. The message has a time to live of <em>TTL</em>.
 shuffle(Peer, Requester, TTL, XList) ->
-    gen_server:call(?MODULE, {shuffle, Peer, Requester, TTL, XList}).
+    gen_server:cast(?MODULE, {shuffle, Peer, Requester, TTL, XList}).
 
 -spec shuffle_reply(ReplyXList :: xlist()) -> ok.
 %% @doc Shuffle reply that carries sample list <em>ReplyXList</em>.
 shuffle_reply(ReplyXList) ->
-    gen_server:call(?MODULE, {shuffle_reply, ReplyXList}).
+    gen_server:cast(?MODULE, {shuffle_reply, ReplyXList}).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -225,75 +225,6 @@ handle_call({neighbour, Sender, Priority}, _, S) ->
             end
     end;
 
-%% Respond to a forward_join, add to active or propagate and maybe add to
-%% passive view.
-handle_call({forward_join, Sender, NewNode, TTL}, _, S0) ->
-    #st{activev=ActiveV, connect_opts=ConnectOpts, opts=Opts} = S0,
-
-    case TTL =:= 0 orelse length(ActiveV) =:= 1 of
-        true ->
-            %% Add to active view, send a reply to the join_reply to let the
-            %% other node know
-            case connect:join_reply(NewNode, ConnectOpts) of
-                {ok, NewPeer} ->
-                    {reply, ok, add_active_peer(NewPeer, S0)};
-                Err ->
-                    lager:error("Join reply error ~p to ~p.~n", [Err, NewNode]),
-                    {reply, Err, S0}
-            end;
-        false ->
-            %% Add to passive view if TTL is equal to PRWL
-            S1 = case TTL =:= prwl(Opts) of
-                     true  -> add_passive_peer(NewNode, S0);
-                     false -> S0
-                 end,
-
-            %% Propagate the forward join using a random walk
-            RandomPeer = misc:random_elem(lists:delete(Sender, ActiveV)),
-            connect:forward_join(RandomPeer, NewNode, TTL-1),
-
-            {reply, ok, S1}
-    end;
-
-%% Respond to a shuffle request, either propagate it or accept it via a
-%% temporary connection to the source of the request. If the node accept then
-%% it adds the shuffle list into it's passive view and responds with with
-%% a shuffle reply
-handle_call({shuffle, Sender, Requester, TTL, XList}, _, S) ->
-    #st{activev=ActiveV, passivev=PassiveV, connect_opts=ConnectOpts} = S,
-
-    case TTL > 0 andalso length(ActiveV) > 1 of
-        %% Propagate the random walk
-        true ->
-            RandomPeer = misc:random_elem(lists:delete(Sender, ActiveV)),
-            connect:shuffle(RandomPeer, Requester, TTL-1, XList),
-            {reply, ok, S};
-        %% Accept the shuffle request, add to passive view and reply
-        false ->
-            ReplyXList = misc:take_n_random(length(XList), PassiveV),
-            connect:shuffle_reply(Requester, ReplyXList, ConnectOpts),
-            {reply, ok, add_xlist(S, XList, ReplyXList)}
-    end;
-
-%% Accept a shuffle reply, add the reply list into the passive view and
-%% close the temporary connection.
-handle_call({shuffle_reply, ReplyXList}, _, S0) ->
-    S = add_xlist(S0#st{last_xlist=[]}, ReplyXList, S0#st.last_xlist),
-    {reply, ok, S};
-
-%% Disconnect an open active connection, add disconnecting node to passive view
-handle_call({disconnect, Sender}, _, S) ->
-    %% Disconnect the peer, close the connection and add node to passive view
-    ActiveV = lists:delete(Sender, S#st.activev),
-    {reply, ok, add_passive_peer(Sender#peer.id, S#st{activev=ActiveV})};
-
-%% Handle failing connections. Try to find a new one if possible
-handle_call({error, Sender, Reason}, _, S0) ->
-    lager:error("Active link to ~p failed with error ~p.~n",
-                [Sender, Reason]),
-    S = S0#st{activev=lists:delete(Sender, S0#st.activev)},
-    {reply, ok, find_new_active(S)};
-
 %% Return current active peers
 handle_call(get_peers, _, S) ->
     {reply, S#st.activev, S};
@@ -310,6 +241,81 @@ handle_call(get_id, _, S) ->
 handle_call(stop, _, S) ->
     connect:stop(),
     {stop, normal, ok, S}.
+
+%% Disconnect an open active connection, add disconnecting node to passive view
+handle_cast({disconnect, Sender}, S) ->
+    %% Disconnect the peer, close the connection and add node to passive view
+    ActiveV = lists:delete(Sender, S#st.activev),
+    {noreply, add_passive_peer(Sender#peer.id, S#st{activev=ActiveV})};
+
+%% Handle failing connections. Try to find a new one if possible
+handle_cast({error, Sender, Reason}, S0) ->
+    lager:error("Active link to ~p failed with error ~p.~n",
+                [Sender, Reason]),
+    S = S0#st{activev=lists:delete(Sender, S0#st.activev)},
+    {noreply, find_new_active(S)};
+
+%% Respond to a forward_join, add to active or propagate and maybe add to
+%% passive view.
+handle_cast({forward_join, Sender, NewNode, TTL}, S0) ->
+    #st{id=Myself, activev=ActiveV, connect_opts=ConnectOpts, opts=Opts} = S0,
+
+    case TTL =:= 0 orelse length(ActiveV) =:= 1 of
+        true ->
+            %% Add to active view, send a reply to the join_reply to let the
+            %% other node know, check to see that you don't send you yourself
+            case Myself =/= NewNode andalso
+                not lists:keymember(NewNode, #peer.id, ActiveV) of
+                true ->
+                    case connect:join_reply(NewNode, ConnectOpts) of
+                        {ok, NewPeer} ->
+                            {noreply, add_active_peer(NewPeer, S0)};
+                        Err ->
+                            lager:error("Join reply error ~p to ~p.~n", [Err, NewNode]),
+                            {noreply, S0}
+                    end;
+                false ->
+                    {noreply, S0}
+            end;
+        false ->
+            %% Add to passive view if TTL is equal to PRWL
+            S1 = case TTL =:= prwl(Opts) of
+                     true  -> add_passive_peer(NewNode, S0);
+                     false -> S0
+                 end,
+
+            %% Propagate the forward join using a random walk
+            RandomPeer = misc:random_elem(lists:delete(Sender, ActiveV)),
+            connect:forward_join(RandomPeer, NewNode, TTL-1),
+
+            {noreply, S1}
+    end;
+
+%% Respond to a shuffle request, either propagate it or accept it via a
+%% temporary connection to the source of the request. If the node accept then
+%% it adds the shuffle list into it's passive view and responds with with
+%% a shuffle reply
+handle_cast({shuffle, Sender, Requester, TTL, XList}, S) ->
+    #st{activev=ActiveV, passivev=PassiveV, connect_opts=ConnectOpts} = S,
+
+    case TTL > 0 andalso length(ActiveV) > 1 of
+        %% Propagate the random walk
+        true ->
+            RandomPeer = misc:random_elem(lists:delete(Sender, ActiveV)),
+            connect:shuffle(RandomPeer, Requester, TTL-1, XList),
+            {noreply, S};
+        %% Accept the shuffle request, add to passive view and reply
+        false ->
+            ReplyXList = misc:take_n_random(length(XList), PassiveV),
+            connect:shuffle_reply(Requester, ReplyXList, ConnectOpts),
+            {noreply, add_xlist(S, XList, ReplyXList)}
+    end;
+
+%% Accept a shuffle reply, add the reply list into the passive view and
+%% close the temporary connection.
+handle_cast({shuffle_reply, ReplyXList}, S0) ->
+    S = add_xlist(S0#st{last_xlist=[]}, ReplyXList, S0#st.last_xlist),
+    {noreply, S}.
 
 %% The node was supplied with contact nodes, try to connect to the cluster
 handle_info(timeout, S) ->
@@ -344,9 +350,6 @@ handle_info(shuffle, S) ->
 
     {noreply, S#st{last_xlist=NewXList}}.
 
-handle_cast(_, S) ->
-    {stop, not_used, S}.
-
 code_change(_, S, _) ->
     {ok, S}.
 
@@ -363,7 +366,7 @@ terminate(_, _) -> ok.
 %%      passive view.
 add_active_peer(Peer, S0) ->
     NodeId = Peer#peer.id,
-    #st{id=Myself, activev=ActiveV0, opts=Opts, mod=Mod} = S0,
+    #st{id=Myself, activev=ActiveV0, opts=Opts} = S0,
         
     case NodeId =/= Myself andalso
         not lists:keymember(NodeId, #peer.id, ActiveV0) of
@@ -372,7 +375,6 @@ add_active_peer(Peer, S0) ->
                     true  -> drop_random_active(S0);
                     false -> S0
                 end,
-            link_up(Mod, Peer),
             S#st{activev=[Peer|S#st.activev],
                  %% Make sure peer are not in both view.
                  passivev=lists:delete(Peer#peer.id, S#st.passivev)};
@@ -429,15 +431,10 @@ find_neighbour(Priority, PassiveV0, ConnectOpts, Tried) ->
     case connect:neighbour(Node, Priority, ConnectOpts) of
         {ok, P} -> {P,Passive ++ Tried};
         decline -> find_neighbour(Priority, Passive, ConnectOpts, [Node|Tried]);
-        {error, Err} ->
+        Err ->
             lager:error("Neighbour error ~p to ~p.~n", [Err, Node]),
             find_neighbour(Priority, Passive, ConnectOpts, Tried) 
     end.
-
-%% @doc Notify callback module <em>Mod</em> of a link_up event.
-link_up(Mod, Peer) ->
-    lager:info("Link up: ~p~n", [Peer]),
-    Mod:link_up(Peer).
 
 -spec try_to_join(S :: #st{}, list(id())) ->
                          ok | {error, could_not_connect}.
