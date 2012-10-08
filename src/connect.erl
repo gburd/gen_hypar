@@ -132,8 +132,12 @@ start_link(ConnectOpts, Remote, Socket) ->
 %% @doc Create a tcp-connection to <em>To</em>. Send a join message and put this
 %%      connection in active state.
 join(Remote, Opts) ->
+<<<<<<< HEAD
     BId = encode_id(opts:myself(Opts)),
     connect_send_active(Remote, Opts, <<?JOIN, BId/binary>>).
+=======
+    catch send_join(Remote, Opts).
+>>>>>>> 689e5e0f23ab10567da742a351e192d017919275
 
 %% @doc Send a forward join over an existing active connection <em>Conn</em>.
 forward_join(Peer, Req, TTL) ->
@@ -141,13 +145,21 @@ forward_join(Peer, Req, TTL) ->
 
 %% @doc Create a new active connection <em>To</em> and send a join_reply.
 join_reply(Remote, Opts) ->
+<<<<<<< HEAD
     BId = encode_id(opts:myself(Opts)),
     connect_send_active(Remote, Opts, <<?JOINREPLY, BId/binary>>).
+=======
+    catch send_join_reply(Remote, Opts).
+>>>>>>> 689e5e0f23ab10567da742a351e192d017919275
 
 %% @doc Create a new connection to <em>To</em> and send a neighbour request with
 %%      priority <em>Priority</em>. 
 neighbour(Remote, Priority, Opts) ->
+<<<<<<< HEAD
     send_neighbour_request(Remote, Priority, Opts).
+=======
+    catch send_neighbour_request(Remote, Priority, Opts).
+>>>>>>> 689e5e0f23ab10567da742a351e192d017919275
 
 %% @doc Send a shuffle request to an active connection <em>Conn</em>. The
 %%      source node is <em>Req</em> with id <em>SId</em>, time to live
@@ -158,7 +170,11 @@ shuffle(Peer, Req, TTL, XList) ->
 %% @doc Send a shuffle reply to <em>To</em> in shuffle reply with id
 %%      <em>SId</em> carrying the reply list <em>XList</em>.
 shuffle_reply(Remote, XList, Opts) ->
+<<<<<<< HEAD
     send_shuffle_reply(Remote, XList, Opts).
+=======
+    catch send_shuffle_reply(Remote, XList, Opts).
+>>>>>>> 689e5e0f23ab10567da742a351e192d017919275
 
 %% @doc Disconnect an active connection <em>Conn</em>.
 disconnect(Peer) -> gen_fsm:sync_send_event(Peer#peer.conn, disconnect).
@@ -229,7 +245,10 @@ active({shuffle, Req, TTL, XList}, C) ->
     BXList = encode_xlist(XList),
     Bin = <<?SHUFFLE, BReq:6/binary, TTL/integer, Len/integer, BXList/binary>>,
     try_send(C, Bin);
+<<<<<<< HEAD
     
+=======
+>>>>>>> 689e5e0f23ab10567da742a351e192d017919275
 active(timeout, C) ->
     link_up(C#conn.mod, C#conn.remote),
     socket_active(C#conn.socket),
@@ -275,6 +294,7 @@ wait_for_ranch(timeout, {LPid, C, Opts}) ->
 %%% Related to outgoing connections
 %%%===================================================================
 
+<<<<<<< HEAD
 %% @doc Try to connect and send Bin. If successful then move the connection
 %%      to active state.
 connect_send_active(Remote, Opts, Bin) ->
@@ -286,10 +306,27 @@ connect_send_active(Remote, Opts, Bin) ->
             end;
         Err -> Err
     end.
+=======
+%% @doc Try to send a join over the socket. If successful returns a peer or
+%%      an error.
+send_join(Remote, Opts) ->
+    {ok, Socket} = start_connection(Remote, Opts),
+    BId = encode_id(opts:myself(Opts)),
+    ok = gen_tcp:send(Socket, <<?JOIN, BId/binary>>),
+    {ok, new_peer(Remote, Socket)}.
+
+%% @doc Try to send a join reply over the socket, return a peer if sucessful.
+send_join_reply(Remote, Opts) ->
+    {ok, Socket} = start_connection(Remote, Opts),
+    BId = encode_id(opts:myself(Opts)),
+    ok = gen_tcp:send(Socket, <<?JOINREPLY, BId/binary>>),
+    {ok, new_peer(Remote, Socket)}.
+>>>>>>> 689e5e0f23ab10567da742a351e192d017919275
 
 %% @doc Try to send a neighbour request over the socket. Wait for a reply,
 %%      and respond to that reply. If the request is successful return a peer.
 send_neighbour_request(Remote, Priority, Opts) ->
+<<<<<<< HEAD
     case start_connection(Remote, Opts) of
         {ok, Socket} ->
             Timeout = opts:timeout(Opts),
@@ -304,6 +341,17 @@ send_neighbour_request(Remote, Priority, Opts) ->
             end;
         Err -> Err
     end.
+=======
+    {ok, Socket} = start_connection(Remote, Opts),
+    Timeout = opts:timeout(Opts),
+    BId = encode_id(opts:myself(Opts)),
+    Bin = case Priority of
+              high -> <<?HNEIGHBOUR, BId/binary>>;
+              low  -> <<?LNEIGHBOUR, BId/binary>>
+          end,
+    ok = gen_tcp:send(Socket, Bin),
+    wait_for_neighbour_reply(Remote, Socket, Timeout).
+>>>>>>> 689e5e0f23ab10567da742a351e192d017919275
 
 %% @doc Receive an accept/decline byte from the socket.
 wait_for_neighbour_reply(Remote, Socket, Timeout) ->
@@ -312,13 +360,18 @@ wait_for_neighbour_reply(Remote, Socket, Timeout) ->
             {ok, new_peer(Remote, Socket)};
         {ok, <<?DECLINE>>} ->
             gen_tcp:close(Socket),
+<<<<<<< HEAD
             decline;
         Err ->
             Err
+=======
+            decline
+>>>>>>> 689e5e0f23ab10567da742a351e192d017919275
     end.
 
 %% @doc Send a shuffle reply
 send_shuffle_reply(Remote, XList, Opts) ->
+<<<<<<< HEAD
     case start_connection(Remote, Opts) of
         {ok, Socket} ->
             Len = length(XList),
@@ -330,6 +383,15 @@ send_shuffle_reply(Remote, XList, Opts) ->
         _Err ->
             ok
     end.
+=======
+    {ok, Socket} = start_connection(Remote, Opts),
+    Len = length(XList),
+    BXList = encode_xlist(XList),
+    Bin = <<?SHUFFLEREPLY, Len/integer, BXList/binary>>,
+    ok = gen_tcp:send(Socket, Bin),    
+    gen_tcp:close(Socket),    
+    ok.
+>>>>>>> 689e5e0f23ab10567da742a351e192d017919275
 
 %% @doc Create a new peer, change controlling process and send a go-ahead
 %%      to the new connection process.
@@ -366,7 +428,11 @@ handle_neighbour(C0, Timeout, Priority) ->
     {ok, Id} = receive_id(C0, Timeout),
     Remote = peer(Id),
     C = C0#conn{remote=Remote},
+<<<<<<< HEAD
     case hypar_node:neighbour(Remote, Priority) of
+=======
+    case hypar_node:neighbour(Id, Priority) of
+>>>>>>> 689e5e0f23ab10567da742a351e192d017919275
         accept  -> accept_neighbour(C);
         decline -> decline_neighbour(C)
     end.
@@ -429,9 +495,17 @@ link_down(Mod, To) ->
 %% @doc Start a connection to a remote host
 start_connection({RemoteIp, RemotePort}, Opts) ->
     {LocalIp, _} = opts:myself(Opts),
+<<<<<<< HEAD
     Args = [{reuseaddr, true}, {ip, LocalIp}, {active, false}, binary,
             {send_timeout, opts:send_timeout(Opts)}, {packet, raw},
             {nodelay, true}],
+=======
+    
+    Args = [{reuseaddr, true}, {ip, LocalIp}, {active, false}, binary,
+            {send_timeout, opts:send_timeout(Opts)}, {packet, raw},
+            {nodelay, true}],
+    
+>>>>>>> 689e5e0f23ab10567da742a351e192d017919275
     gen_tcp:connect(RemoteIp, RemotePort, Args, opts:timeout(Opts)).
 
 %% @doc Return the first ip address that isn't the loopback interface
