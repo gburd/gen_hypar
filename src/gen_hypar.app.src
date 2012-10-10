@@ -1,0 +1,6 @@
+{application, gen_hypar,
+ [{description, "Behaviour for defining a process that works side-by-side with the HyparView group membership process."},
+  {vsn, "1"},
+  {applications, [kernel, stdlib, ranch, gproc]},
+  {mod, gen_hypar_app, []}
+ ]}.
