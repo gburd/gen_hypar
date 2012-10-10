@@ -9,7 +9,11 @@
 
 -include("gen_hypar.hrl").
 
--export([handle_incoming_connection/2]).
+-export([start_connection/3, send_join/2, send_join_reply/2,  send_shuffle_reply/2]).
+-export([send_neighbour_request/3, wait_for_neighbour_reply/2,
+         accept_neighbour_request/1, decline_neighbour_request/1]).
+-export([keep_alive/0, forward_join/2, shuffle/3]).
+-export([handle_incoming_connection/2, decode_msg/1]).
 
 %% Protocol string, a new connection should always start with this
 -define(PROTOSTR, "hypar").
@@ -96,7 +100,7 @@ wait_for_neighbour_reply(Socket, Timeout) ->
 start_connection({LocalIp, _}, {RemoteIp, RemotePort}, Options) ->
     Timeout = gen_hypar_opts:timeout(Options),
     {ok, Socket} = gen_tcp:connect(RemoteIp, RemotePort, Timeout,
-                                   sockopts(Options)),
+                                   [{ip, LocalIp}|sockopts(Options)]),
     ok = gen_tcp:send(Socket, <<?PROTOSTR>>),
     {ok, Socket}.
 

@@ -18,15 +18,16 @@
 %%     The callback process can then use gen_hypar:send/2 to send data over
 %%     to it's neighbours in the overlay.
 -module(gen_hypar).
--behaviour(gen_hypar).
 
--export([start_link/4, get_peers/1, send/2]).
+-export([behaviour_info/1]).
+
+-export([start_link/4, join_cluster/2, get_peers/1, send/2]).
 
 -export([deliver/3, link_up/3, link_down/2]).
 
 -include("gen_hypar.hrl").
 
--spec behaviour_info(callbacks) -> [{start_link, 3}];
+-spec behaviour_info(callbacks) -> [{start_link, 2}];
                     (any())     -> undefined.
 behaviour_info(callbacks) ->
     [{start_link, 2}];

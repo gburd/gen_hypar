@@ -14,7 +14,7 @@
 
 -behaviour(gen_server).
 
--export([start_link/4]).
+-export([start_link/4, wait_for/2]).
 -export([init/1, handle_cast/2, handle_call/3, handle_info/2, terminate/2,
          code_change/3]).
 -export([send_message/2, forward_join/3, shuffle/4, disconnect/1]).
@@ -48,8 +48,8 @@ disconnect(SendPid) ->
 %%      and we just stop this peer
 send(S, Packet) ->
     case proto_wire:send(S#state.socket, Packet) of
-        ok  -> {noreply, S, S#state.keep_alive};
-        Err -> {stop, normal, S}
+        ok   -> {noreply, S, S#state.keep_alive};
+        _Err -> {stop, normal, S}
     end.
 
 init([Identifier, Peer, Socket, KeepAlive]) ->

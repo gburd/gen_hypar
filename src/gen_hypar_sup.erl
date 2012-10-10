@@ -11,7 +11,7 @@
 
 -include("gen_hypar.hrl").
 
--export([start_link/4]).
+-export([start_link/4, start_gen_hypar/3, wait_for/1]).
 -export([init/1]).
 
 -spec start_link(Identifier :: id(), Mod :: module(), ModArgs :: any(),
