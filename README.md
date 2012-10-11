@@ -1,4 +1,4 @@
-#hyparerl
+#gen_hypar
 ---------
 This is an implementation in Erlang of the [Hybrid Partial View][] membership protocol by João Leitão, José Pereira and Luís Rodrogies.
 
@@ -7,78 +7,75 @@ This is an implementation in Erlang of the [Hybrid Partial View][] membership pr
 ##Quickstart
 
 ###Firing up a node
-A node is defined by it's unique identifer `{Ip, Tuple}` on which it is reachable.
+This is a general behaviour for processes that relies on a group membership service. To start a process that runs along side of the group membership serivce we need to define the callback module for  the ``gen_hypar`` behaviour. The callback needs to implement one function:
+               
+               start_link(Identifier, ModuleArgs) -> {ok, pid()}.
 
-To start a new node we call any of the start-functions:
+This should spin up a new process. The first thing this process needs to do is call ``gen_hypar:register_and_wait(Identifier)`` to keep things synchronized with all the other processes (see the [supervision tree](#supervision-tree) below). To start the behaviour call:
+               
+               gen_hypar:start_link(Identifier, Module, ModuleArgs, Options)
 
-               hyparerl:start()
-               hyparerl:start(Options)
+This will start up the supervision tree with an isolated node running the HyparView protocol. ``Identifier`` being the ``{Ip, Port}`` tuple that the node is reachable on, ``Module`` and ``ModuleArgs`` are the callback module and arguments. ``Options`` are the gen_hypar-related options. All options are listed at the [bottom](#application-options).
 
-* `start/0` starts the node on a random port and tries to default an ip-address. It is of course configurable via the     usual application interface.
-* `start/1` starts with the list of options given. 
+The options should be the same for all nodes in a cluster and otherwise the semantics of the program is not well defined.
 
-To configure another ip address and port use the **id** option. It's also possible to only define the ip or the port with the **ip** and **port**. If the whole identifier is not know it can be retrived using:
-
-               hyparerl:get_id()
-
-There are alot more options and all of them are listed at the [bottom](#application-options). The options should be the same for all nodes in a cluster and otherwise the semantics of the program is not well defined.
+When things are fired up we probably want to reach the gen_hypar process, this can be done via:
+               
+               gen_hypar:where(Identifier) -> undefined | pid().
 
 ###Enter the cluster
 
-The node is started isolated and alone until it is joined to the cluster using:
+The node is started isolated and alone until it is joined to the cluster:
 
-               hyparerl:join_cluster(Node)
-               hyparerl:join_cluster(Nodes)
+               gen_hypar:join_cluster(Identifier, Contact) -> ok | {error, could_not_connect}
                
-Where either a single node `Node` is provided or a list `Nodes`. The list is tried in order. There is also the option to define a list of contact nodes with the **contact_nodes** option. Use with caution, if something goes wrong the Erlang way of fail-fast might not be guarantueed.
+This joins the node ``Identifier`` to ``Contact``.
 
-If the node recovers from some previous error and start up again on the same ip and port then there is the possibility that it automatically rejoins the cluster.
+If the node recovers from some previous error and start up again on the same ip and port then there is the possibility that it automatically rejoins the cluster. This is because it will with very high probability lie in some nodes passive view. Though it's probably smarter to just rejoin after a disconnect.
 
 ###Where are the peers?
-When the node has joined the cluster the current peers can be retrived with:
+As soon as the node has been joined to a cluster the gen_hypar-process will start receiving messages on the form:
+               
+               {link_up, {PeerId, Pid}}
+               {link_down, PeerId}
+               {message, PeerId, Message}
 
-               hyparerl:get_peers()
+These are rather self-explainatory. 
+* ``link_up`` - When a new active peer becomes available.
+* ``link_down`` - When an active neighbour becomes unavailable or disconnect.
+* ``message`` - When a message is received.
+
+If you for some reason want to run only the group-membership service then implement a noop module and retrive the peers with:
+               
+               gen_hypar:get_peers(Identifier) -> list({id(), pid()}
 
 ###Sending data
-To send data you first need to have a `Peer` retrived either via the above method or using the callback functions explained below. Anyhow the function to use is:
+To send data you first need to have the pid of an active peer as explained above. Then you use the function:
                
-               hyparerl:send(Peer, Message)
+               gen_hypar:send_message(Pid, Message) -> ok.
 
-The `Message` can be either a `binary()` or an `iolist()`. 
-
-###Retriving data and the callback module
-The callback option **mod** should be a module that defines three functions:
-               
-               Mod:deliver(Peer, Message) -> ok
-               Mod:link_up(Peer)          -> ok.
-               Mod:link_down(Peer         -> ok
-
-When a binary `Message` is received from `Peer` `deliver/2` is called. Upon link changes when a `Peer` either goes up or down `link_up/1`, `link_down/1` are executed.
+The `Message` should be an ``iolist()``. Thus a ``binary()`` will also work.
 
 ###Example
-There is an example application included in examples/flooder.erl. flooder is a reliable flooding broadcaster, though very simple.
+There is an example module included in examples/flooder.erl. *flooder* is a reliable flooding broadcaster, though very simple and naive. 
 
-               erlc -o ebin -I include/ examples/flooder.erl
-               erl -pa ebin/ -pa ebin/*/deps -eval 'flooder:start_link()'
-               ...
-               05:02:16.926 [info] Initializing: {{192,168,1,138},APort}...
+##Supervison tree
+This is rather implementation specific. The call to ``gen_hypar:start_link/4`` will return the pid of the top supervisor. Thus this call can be used to incorporate the process into another supervision tree. The tree looks like:
 
-Then fire up a couple of terminals and in each of them connect them to each other or to the original node. `start_link/1` need only a port and connects locally.
+                        gen_hypar_sup
+                       /      |      \ 
+               peer_sup   hypar_node  gen_hypar
+                  |
+               peers
 
-               erl -pa ebin/ -pa ebin/*/deps -eval 'flooder:start_link(APort)'
-               ...
-               05:03:12.416 [info] Initializing: {{192,168,1,138},AnotherPort}...
-               ...
-               05:03:12:523 [info] Link up: {peer, {{192,168,1,138},APort}}
-               
-As more nodes join more links will become available and eventually (if you for example join 6 nodes to the first one), start to go down also as nodes reach their maximum fanout. Then try to send a couple of messages from different nodes:
-       
-               1> flooder:broadcast(<<"PLEASE WORK, BRAIN SLEEP NEEDS!>>).
-               ok
-               2> Packet delivered:
-               <<"PLEASE WORK, BRAIN SLEEP NEEDS!>>
+The peers themselves are a supervision tree of 4 processes:
 
-And hopefully all nodes should receive that message. Try playing around with it, killing some nodes, joining others and sending messages in between. 
+                                 peer
+                              /    |    \
+                             /     |     \
+                      peer_ctl peer_send peer_recv
+
+``peer_ctl`` is the middle-man between the ``hypar_node`` which is responsible for the protocol logic and the gen_hypar-process. ``peer_send`` and ``peer_recv`` are responsible for on-wire sending and receiving.
 
 ##Other projects on top of hyparerl
 Check out [plumcast][], it's in early development. It is an implementation of the Plumtree protocol developed by the same guys. Plumcast builds a broadcast tree on top of hyparerl to reduce the network traffic without sacrificing to much latency.
@@ -90,10 +87,6 @@ Also check out [floodcast][], also very early development, that will basically b
 
 ##Application options
 <table>
- <tr><td> **id**             </td><td> The unique identifier. It is a tuple `{Ip, Port}`.</td><td>IP∈IfList<br>Port=Random</td></tr>
- <tr><td> **ip**             </td><td> Define only the ip address. </td><td>IP∈IfList</td></tr>
- <tr><td> **port**           </td><td> Define only the port. </td><td>Port=Random</td></tr>
- <tr><td> **mod**            </td><td> The callback module.</td><td>No-op</td></tr>
  <tr><td> **active_size**    </td><td> Maximum entries in the active view.</td><td>5</td></tr>
  <tr><td> **passive_size**   </td><td> Same as above but for passive view.</td><td>30</td></tr>
  <tr><td> **arwl**           </td><td> Active Random Walk Length.</td><td>6</td></tr>
@@ -101,6 +94,4 @@ Also check out [floodcast][], also very early development, that will basically b
  <tr><td> **k_active**       </td><td> The number of nodes sampled from the active view when doing a shuffle.</td><td>3</td</tr>
  <tr><td> **k_passive**      </td><td> Same as above but with passive view.</td><td>4</td></tr>
  <tr><td> **shuffle_period** </td><td> Cyclic period timer of when to do a shuffle in milliseconds.</td><td>10000</td></tr>
- <tr><td> **timeout**        </td><td> Define the timeout value when receiving data, if a timeout occurs that node is considered dead.</td><td>10000</td></tr>
- <tr><td> **send_timeout**   </td><td> Same as above but when data is sent.</td><td>10000</td></tr>
- <tr><td> **contact_nodes**  </td><td> A list current cluster members to join to.</td><td>[]</td></tr>
+ <tr><td> **keep_alive**     </td><td> The time between heartbeat messages. Fine tune the responsiveness to failures.</td></tr>
