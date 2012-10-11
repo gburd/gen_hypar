@@ -45,7 +45,7 @@ These are rather self-explainatory.
 * ``link_down`` - When an active neighbour becomes unavailable or disconnect.
 * ``message`` - When a message is received.
 
-If you for some reason want to run only the group-membership service then implement a noop module and retrive the peers with:
+If you for some reason want to run only the group-membership service then implement a no-op module and retrive the peers with:
                
                gen_hypar:get_peers(Identifier) -> list({id(), pid()}
 
@@ -59,7 +59,7 @@ The `Message` should be an ``iolist()``. Thus a ``binary()`` will also work.
 ###Example
 There is an example module included in examples/flooder.erl. *flooder* is a reliable flooding broadcaster, though very simple and naive. 
 
-##Supervison tree
+##Supervision tree
 This is rather implementation specific. The call to ``gen_hypar:start_link/4`` will return the pid of the top supervisor. Thus this call can be used to incorporate the process into another supervision tree. The tree looks like:
 
                         gen_hypar_sup
@@ -94,4 +94,4 @@ Also check out [floodcast][], also very early development, that will basically b
  <tr><td> **k_active**       </td><td> The number of nodes sampled from the active view when doing a shuffle.</td><td>3</td</tr>
  <tr><td> **k_passive**      </td><td> Same as above but with passive view.</td><td>4</td></tr>
  <tr><td> **shuffle_period** </td><td> Cyclic period timer of when to do a shuffle in milliseconds.</td><td>10000</td></tr>
- <tr><td> **keep_alive**     </td><td> The time between heartbeat messages. Fine tune the responsiveness to failures.</td></tr>
+ <tr><td> **keep_alive**     </td><td> The time between heartbeat messages. Fine tune the responsiveness to failures.</td><td>NOTIMPL</td></tr>
