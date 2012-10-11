@@ -8,49 +8,66 @@
 %%      via peer_send and peer_recv.
 %% -------------------------------------------------------------------
 -module(peer_ctl).
-
 -behaviour(gen_server).
 
+-include("gen_hypar.hrl").
+
+%% Start a control peer
 -export([start_link/5]).
 
+%% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
--export([send_message/2, incoming_message/2, forward_join/3, shuffle/4,
+%% Outgoing events
+-export([send_message/2, forward_join/3, shuffle/4,
          disconnect/1]).
 
+%% Incoming events
+-export([incoming_message/2]).
+
+%% Coordination
 -export([wait_for/2]).
 
--record(state, {local,
-                remote,
-                socket,
-                gen_hypar,
-                hypar_node,
-                peer_send}).
+%% State
+-record(state, {local       :: id(),
+                remote      :: id(),
+                socket      :: inet:socket(),
+                gen_hypar   :: pid(),
+                hypar_node  :: pid(),
+                peer_send   :: pid()}).
 
+-spec start_link(Identifier :: id(), Peer :: id(), Socket :: inet:socket(),
+                 GenHypar :: pid(), HyparNode :: pid()) -> {ok, pid()}.
+%% @doc Start a control peer
 start_link(Identifier, Peer, Socket, GenHypar, HyparNode) ->
     Args = [Identifier, Peer, Socket, GenHypar, HyparNode],
     gen_server:start_link(?MODULE, Args, []).
 
+-spec send_message(Pid :: pid(), Msg :: iolist()) -> ok.
 %% @doc Send a message to a peer
-send_message(CtlPid, Msg) ->
-    gen_server:cast(CtlPid, {message, Msg}).
+send_message(Pid, Msg) ->
+    gen_server:cast(Pid, {message, Msg}).
 
+-spec incoming_message(Pid :: pid(), Msg :: active_message()) -> ok.
 %% @doc Receive an incoming message from a peer
-incoming_message(CtlPid, Msg) ->
-    gen_server:cast(CtlPid, {incoming, Msg}).
+incoming_message(Pid, Msg) ->
+    gen_server:cast(Pid, {incoming, Msg}).
 
+-spec forward_join(Pid :: pid, Peer :: id(), TTL :: ttl()) -> ok.
 %% @doc Send a forward join to a peer
-forward_join(CtlPid, Peer, TTL) ->
-    gen_server:cast(CtlPid, {forward_join, Peer, TTL}).
+forward_join(Pid, Peer, TTL) ->
+    gen_server:cast(Pid, {forward_join, Peer, TTL}).
 
+-spec shuffle(Pid :: pid(), Peer :: id(), TTL :: ttl(), XList :: xlist()) -> ok.
 %% @doc Send a shuffle to a peer
-shuffle(CtlPid, Peer, TTL, XList) ->
-    gen_server:cast(CtlPid, {shuffle, Peer, TTL, XList}).
+shuffle(Pid, Peer, TTL, XList) ->
+    gen_server:cast(Pid, {shuffle, Peer, TTL, XList}).
 
+-spec disconnect(Pid :: pid()) -> ok.
 %% @doc Send a disconnect message to a peer
-disconnect(CtlPid) ->
-    gen_server:cast(CtlPid, disconnect).
+disconnect(Pid) ->
+    gen_server:cast(Pid, disconnect).
 
 init([Identifier, Peer, Socket, GenHypar, HyparNode]) ->    
     {ok, #state{local=Identifier,
@@ -59,20 +76,34 @@ init([Identifier, Peer, Socket, GenHypar, HyparNode]) ->
                 gen_hypar=GenHypar,
                 hypar_node=HyparNode}, 0}.
 
+handle_cast(_, disconnected) ->
+    {noreply, disconnected};
+%% Handle an incoming message
 handle_cast({incoming, Msg}, S) ->
     handle_incoming(Msg, S);
+%% Route a message over to the remote peer
 handle_cast({message, Msg}, S) ->
     peer_send:send_message(S#state.peer_send, Msg),
     {noreply, S};
+%% Send a forward join to the remote peer
 handle_cast({forward_join, Peer, TTL}, S) ->
     peer_send:forward_join(S#state.peer_send, Peer, TTL),
     {noreply, S};
+%% Send a shuffle request to the remote peer
 handle_cast({shuffle, Peer, TTL, XList}, S) ->
     peer_send:shuffle(S#state.peer_send, Peer, TTL, XList),
     {noreply, S};
+%% Disconnect the remote peer, move to disconnected state and 
+%% wait for the other side to kill the socket
+%% NOTE: This is because we DO NOT want messages to be received after
+%%       the link_down event has been sent. This would violate the
+%%       properties that when a link_down event has been sent the link
+%%       is really DOWN. If we didn't guard here the receive process
+%%       might continue to deliver messages and the gen_hypar process
+%%       might 'maliciously' send data after the link_down. 
 handle_cast(disconnect, S) ->
     peer_send:disconnect(S#state.peer_send),
-    {noreply, S}.
+    {noreply, disconnected}.
 
 handle_call(_, _, State) ->
     {stop, not_used, State}.
@@ -80,7 +111,7 @@ handle_call(_, _, State) ->
 %% Wait in the send process, then register the control peer
 handle_info(timeout, S) ->
     {ok, SendPid} = peer_send:wait_for(S#state.local, S#state.remote),
-    yes = register_peer_ctl(S#state.local, S#state.remote),
+    true = register_peer_ctl(S#state.local, S#state.remote),
     {noreply, S#state{peer_send=SendPid}}.
 
 terminate(_, S) ->
@@ -90,7 +121,11 @@ terminate(_, S) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
-%% Handle an incoming message, send it to the gen_hypar process
+
+-spec handle_incoming(active_message(), #state{}) ->
+                             {noreply, #state{}} |
+                             {stop, normal, #state{}}.
+%% @doc Handle an incoming message, send it to the gen_hypar process
 handle_incoming({message, Bin}, S) ->
     gen_hypar:deliver(S#state.gen_hypar, S#state.remote, Bin),
     {noreply, S};
@@ -102,19 +137,25 @@ handle_incoming({forward_join, Peer, TTL}, S) ->
 handle_incoming({shuffle, Peer, TTL, XList}, S) ->
     hypar_node:shuffle(S#state.hypar_node, S#state.remote, Peer, TTL, XList),
     {noreply, S};
+%% Just ignore a keep-alive
+handle_incoming(keep_alive, S) ->
+    {noreply, S};
 %% Send an incoming disconnect to the hypar_node and shut down the peer
 handle_incoming(disconnect, S) ->
     hypar_node:disconnect(S#state.hypar_node, S#state.remote),
     {stop, normal, S}.
 
 %% @doc Register a control peer
+-spec register_peer_ctl(Identifier :: id(), Peer :: id()) -> boolean().
 register_peer_ctl(Identifier, Peer) ->
-    gen_hypar_util:register_self(name(Identifier, Peer)).
+    gen_hypar_util:register(name(Identifier, Peer)).
 
+-spec wait_for(Identifier :: id(), Peer :: id()) -> {ok, pid()}.
 %% @doc Wait for a control peer to start
 wait_for(Identifier, Peer) ->
     gen_hypar_util:wait_for(name(Identifier, Peer)).
 
+-spec name(Identifier :: id(), Peer :: id()) -> {peer_ctl, id(), id()}.
 %% @doc Gproc name of a control peer
 name(Identifier, Peer) ->
     {peer_ctl, Identifier, Peer}.

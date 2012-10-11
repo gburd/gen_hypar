@@ -6,30 +6,46 @@
 %% @doc This is the receiving peer process. It receives data on the
 %%      socket and parses the packets as they come and forwards them
 %%      to the control process.
+%% @todo Analog to peer_send this might be a good place to do buffering
+%%       of outgoing messages for rate throttling. TCP should do most of
+%%       the rate controlling but it may not be enough to get a good solution.
 %% -------------------------------------------------------------------
 -module(peer_recv).
-
 -behaviour(gen_server).
 
--export([start_link/4, go_ahead/2, wait_for/2]).
+-include("gen_hypar.hrl").
 
+%% Start
+-export([start_link/4]).
+
+%% Coordination
+-export([go_ahead/2, wait_for/2]).
+
+%% gen_server callbacks
 -export([init/1, handle_cast/2, handle_call/3, handle_info/2, terminate/2,
          code_change/3]).
 
--record(state, {peer_ctl,
-                socket,
-                timeout,
-                data}).
+%% State
+-record(state, {peer_ctl :: pid(),
+                socket   :: inet:socket(),
+                timeout  :: timeout(),
+                data     :: binary()}).
 
+-spec start_link(Identifier :: id(), Peer :: id(), Socket :: inet:socket(),
+                 Timeout :: timeout()) -> {ok, pid()}.
+%% @doc Start a reciving process
 start_link(Identifier, Peer, Socket, Timeout) ->
     gen_server:start_link(?MODULE, [Identifier, Peer, Socket, Timeout], []).
 
-go_ahead(RecvPid, Socket) ->
-    RecvPid ! {go_ahead, Socket}.
+-spec go_ahead(Pid :: pid(), Socket :: inet:socket()) ->
+                      {go_ahead, inet:socket()}.
+%% @doc Tell the receiving process that it's ok to proceed.
+go_ahead(Pid, Socket) ->
+    Pid ! {go_ahead, Socket}.
 
 init([Identifier, Peer, Socket, Timeout]) ->
     {ok, CtlPid} = peer_ctl:wait_for(Identifier, Peer),
-    yes = register_peer_send(Identifier, Peer),
+    true = register_peer_send(Identifier, Peer),
     {ok, #state{peer_ctl=CtlPid,
                 socket=Socket,
                 timeout=Timeout,
@@ -41,13 +57,14 @@ handle_cast(_, S) ->
 handle_call(_, _, S) ->
     {stop, not_used, S}.
 
-handle_info(timeout, S=#state{socket=Socket, timeout=Timeout, data=RestBin}) ->
-    case gen_tcp:recv(Socket, 0, Timeout) of
+handle_info(timeout, S=#state{socket=Socket, data=RestBin}) ->
+    case gen_tcp:recv(Socket, 0) of
         {ok, Bin} ->
             handle_packet(S, <<RestBin/binary, Bin/binary>>);
         _Err ->
             {stop, normal, S}
     end;
+
 handle_info({go_ahead, Socket}, S=#state{socket=Socket}) ->
     {noreply, S, 0}.
 
@@ -58,22 +75,30 @@ terminate(_, S) ->
 code_change(_, S, _) ->
     {ok, S}.
 
-register_peer_send(Identifier, Peer) ->
-    gen_hypar_util:register_self(name(Identifier, Peer)).
-
-wait_for(Identifier, Peer) ->
-    gen_hypar_util:wait_for(name(Identifier, Peer)).
-
-%% @private Name of a receive process
-name(Identifier, Peer) ->
-    {peer_recv, Identifier, Peer}.
-
-handle_packet(<<>>, S) ->
+-spec handle_packet(S :: #state{}, Bin :: binary()) -> {noreply, #state{}}.
+%% @doc Handle an incoming packet, decoding it and send it to the control
+%%      process
+handle_packet(S, <<>>) ->
     {noreply, S, 0};
-handle_packet(<<Len:32, Bin/binary>>, S) when byte_size(Bin) >= Len ->
+handle_packet(S, <<Len:32, Bin/binary>>) when byte_size(Bin) >= Len ->
     <<Packet:Len/binary, Rest/binary>> = Bin,
     Msg = proto_wire:decode_msg(Packet),
     peer_ctl:incoming_message(S#state.peer_ctl, Msg),
-    handle_packet(Rest, S);
-handle_packet(Bin, S) ->
+    handle_packet(S, Rest);
+handle_packet(S, Bin) ->
     {noreply, S#state{data=Bin}, 0}.
+
+-spec register_peer_send(Identifier :: id(), Peer :: id()) -> boolean().
+%% @doc Register the receiving process
+register_peer_send(Identifier, Peer) ->
+    gen_hypar_util:register(name(Identifier, Peer)).
+
+-spec wait_for(Identifier :: id(), Peer :: id()) -> {ok, pid()}.
+%% @doc Wait for a receiving process
+wait_for(Identifier, Peer) ->
+    gen_hypar_util:wait_for(name(Identifier, Peer)).
+
+-spec name(Identifier :: id(), Peer :: id()) -> {peer_recv, id(), id()}.
+%% @doc Name of a receive process
+name(Identifier, Peer) ->
+    {peer_recv, Identifier, Peer}.

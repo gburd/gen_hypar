@@ -8,21 +8,33 @@
 %%      sent over the socket. This also send periodic keep-alive messages,
 %%      if the link is idle for too long.
 %% @todo This is a good spot to implement rate throttling. Might be a good
-%%       idea if there are lots of traffic.
+%%       idea if there are lots of traffic. Implement keep-alive messages.
+%%       This is way we can easier control the granularity of time units
+%%       for tcp as a failure-detector.
 %% -------------------------------------------------------------------
 -module(peer_send).
-
 -behaviour(gen_server).
 
--export([start_link/4, wait_for/2]).
--export([init/1, handle_cast/2, handle_call/3, handle_info/2, terminate/2,
-         code_change/3]).
+-include("gen_hypar.hrl").
+
+%% Start
+-export([start_link/4]).
+
+%% Coordination
+-export([wait_for/2]).
+
+%% Send functions
 -export([send_message/2, forward_join/3, shuffle/4, disconnect/1]).
 
--record(state, {local,
-                remote,
-                socket,
-                keep_alive}).
+%% gen_server callbacks
+-export([init/1, handle_cast/2, handle_call/3, handle_info/2, terminate/2,
+         code_change/3]).
+
+%% State
+-record(state, {local      :: id(),
+                remote     :: id(),
+                socket     :: inet:socket(),
+                keep_alive :: pos_integer()}).
 
 %% @doc Start a send process
 start_link(Identifier, Peer, Socket, KeepAlive) ->
@@ -48,29 +60,29 @@ disconnect(SendPid) ->
 %%      and we just stop this peer
 send(S, Packet) ->
     case proto_wire:send(S#state.socket, Packet) of
-        ok   -> {noreply, S, S#state.keep_alive};
+        ok   -> {noreply, S};
         _Err -> {stop, normal, S}
     end.
 
 init([Identifier, Peer, Socket, KeepAlive]) ->
-    yes = register_peer_send(Identifier, Peer),
+    true = register_peer_send(Identifier, Peer),
     {ok, #state{local=Identifier,
                 remote=Peer,
                 socket=Socket,
-                keep_alive=KeepAlive}, KeepAlive}.
+                keep_alive=KeepAlive}}.
 
 handle_cast({message, Bin}, S) ->
-    send(proto_wire:message(Bin), S);
+    send(S, proto_wire:message(Bin));
 handle_cast({forward_join, Peer, TTL}, S) ->
-    send(proto_wire:forward_join(Peer, TTL), S);
+    send(S, proto_wire:forward_join(Peer, TTL));
 handle_cast({shuffle, Peer, TTL, XList}, S) ->
-    send(proto_wire:shuffle(Peer, TTL, XList), S);
+    send(S, proto_wire:shuffle(Peer, TTL, XList));
 handle_cast(disconnect, S) ->
-    send(proto_wire:disconnect(), S).
+    send(S, proto_wire:disconnect()).
 
 %% @doc Send a keep-alive message
-handle_info(timeout, S) ->
-    send(S, proto_wire:keep_alive()).
+handle_info(_, S) ->
+    {stop, not_used, S}.
 
 handle_call(_,_,S) ->
     {stop, not_used, S}.
@@ -84,7 +96,7 @@ code_change(_, S, _) ->
 
 %% @doc Register a send process
 register_peer_send(Identifier, Peer) ->
-    gen_hypar_util:register_self(name(Identifier, Peer)).
+    gen_hypar_util:register(name(Identifier, Peer)).
 
 %% @doc Wait for a send process to register
 wait_for(Identifier, Peer) ->

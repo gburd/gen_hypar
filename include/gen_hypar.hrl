@@ -20,21 +20,25 @@
 
 %% @doc All valid options
 -type option() ::
-        {active_size, pos_integer()}    | %% Maximum number of active links
-        {passive_size, pos_integer()}   | %% Maximum number of passive nodes
-        {arwl, pos_integer()}           | %% Active random walk length
-        {prwl, pos_integer()}           | %% Passive random walk length
-        {k_active, pos_integer()}       | %% k samples from active view in shuffle
-        {k_passive, pos_integer()}      | %% k samples from passive view in shuffle
+        {active_size,    pos_integer()} | %% Maximum number of active links
+        {passive_size,   pos_integer()} | %% Maximum number of passive nodes
+        {arwl,           pos_integer()} | %% Active random walk length
+        {prwl,           pos_integer()} | %% Passive random walk length
+        {k_active,       pos_integer()} | %% k samples from active view in shuffle
+        {k_passive,      pos_integer()} | %% k samples from passive view in shuffle
         {shuffle_period, pos_integer()} | %% Shuffle period timer in milliseconds
-        {timeout, timeout()}            | %% Receive timeout, when to consider nodes dead
-        {send_timeout, timeout()}.        %% Send timeout, when to consider nodes dead
+        {timeout,        timeout()}     | %% Receive timeout, when to consider nodes dead
+        {send_timeout,   timeout()}     | %% Send timeout, when to consider nodes dead
+        {keep_alive,     pos_integer()}.  %% Time between keep-alive messages
 
-%% @doc Type of an active peer: {Identifier, CtlPid, SendPid}
--type peer() :: {id(), pid()}. 
+%% @doc Type of peers returned by get_peers and link_up
+-type peer() :: {id(), pid()}.
+
+%% @doc Type of an active peer: {Identifier, Pid, MRef}
+-type active_peer() :: {id(), pid(), reference()}. 
 
 %% @doc Type of active view
--type active_view() :: list(peer()).
+-type active_view() :: list(active_peer()).
 
 %% @doc A list of peer ids
 -type view() :: list(id()).
@@ -47,3 +51,16 @@
 
 %% @doc Internal type for time to live
 -type ttl() :: non_neg_integer().
+
+%% @doc Type of the messages that are transfered before a peer becomes active
+-type pre_active_message() :: {shuffle_reply, xlist()} |
+                              {join, id()} |
+                              {join_reply, id()} |
+                              {neighbour, id(), priority()}.
+
+%% @doc Type of the messages that are transfered in the active state of a peer
+-type active_message() :: {message, binary()} |
+                          {forward_join, id(), ttl()} |
+                          {shuffle, id(), ttl(), xlist()} |
+                          keep_alive |
+                          disconnect.

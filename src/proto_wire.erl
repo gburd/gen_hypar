@@ -9,10 +9,10 @@
 
 -include("gen_hypar.hrl").
 
--export([start_connection/3, send_join/2, send_join_reply/2,  send_shuffle_reply/2]).
--export([send_neighbour_request/3, wait_for_neighbour_reply/2,
-         accept_neighbour_request/1, decline_neighbour_request/1]).
--export([keep_alive/0, forward_join/2, shuffle/3]).
+-export([start_connection/3, close/1, send/2, send_join/2, send_join_reply/2,
+         send_shuffle_reply/2, send_neighbour_request/3,
+         wait_for_neighbour_reply/2, send_accept/1, send_decline/1]).
+-export([message/1, forward_join/2, shuffle/3, disconnect/0, keep_alive/0]).
 -export([handle_incoming_connection/2, decode_msg/1]).
 
 %% Protocol string, a new connection should always start with this
@@ -48,7 +48,7 @@ handle_incoming_connection(Socket, Options) ->
     {ok, <<PacketLength:32>>} = gen_tcp:recv(Socket, 4, Timeout),
     {ok, Packet} = gen_tcp:recv(Socket, PacketLength, Timeout),
     case Packet of
-        <<?SHUFFLEREPLY, BXList>> ->
+        <<?SHUFFLEREPLY, BXList/binary>> ->
             {shuffle_reply, gen_hypar_util:decode_idlist(BXList)};
         <<?JOIN, Id:?IDSIZE/binary>> ->
             {join, gen_hypar_util:decode_id(Id)};
@@ -60,17 +60,12 @@ handle_incoming_connection(Socket, Options) ->
             {neighbour, gen_hypar_util:decode_id(Id), low}
     end.
 
+%% Send functions
+
+%% @private Send a binary but packet it with a length header first
 send(Socket, Bin) ->
     Len = byte_size(Bin),
-    ok = gen_tcp:send(Socket, <<Len:32, Bin>>).
-
-%% @private Send an accept byte
-accept_neighbour_request(Socket) ->
-    send(Socket, accept()).
-
-%% @private Send a decline byte
-decline_neighbour_request(Socket) ->
-    send(Socket, decline()).
+    ok = gen_tcp:send(Socket, <<Len:32/integer, Bin/binary>>).
 
 %% @private Send a join
 send_join(Socket, Identifier) ->
@@ -84,6 +79,14 @@ send_join_reply(Socket, Identifier) ->
 send_neighbour_request(Socket, Myself, Priority) ->
     send(Socket, neighbour(Myself, Priority)).
 
+%% @private Send an accept byte
+send_accept(Socket) ->
+    send(Socket, accept()).
+
+%% @private Send a decline byte
+send_decline(Socket) ->
+    send(Socket, decline()).
+
 %% @private Send a shuffle reply
 send_shuffle_reply(Socket, XList) ->
     send(Socket, shuffle_reply(XList)).
@@ -96,18 +99,33 @@ wait_for_neighbour_reply(Socket, Timeout) ->
         {ok, <<1:32, ?DECLINE>>} -> decline
     end.
 
-%% @doc Start a new connection, send the protocol string and return the socket.
+%% Start and close a connection
+
+%% @private Start a new connection, send the protocol string and return the socket.
 start_connection({LocalIp, _}, {RemoteIp, RemotePort}, Options) ->
     Timeout = gen_hypar_opts:timeout(Options),
-    {ok, Socket} = gen_tcp:connect(RemoteIp, RemotePort, Timeout,
-                                   [{ip, LocalIp}|sockopts(Options)]),
+    Opts = [{ip, LocalIp}|sockopts(Options)],
+    {ok, Socket} = gen_tcp:connect(RemoteIp, RemotePort, Opts, Timeout),
     ok = gen_tcp:send(Socket, <<?PROTOSTR>>),
     {ok, Socket}.
 
-accept()  -> <<?ACCEPT>>.
-decline() -> <<?DECLINE>>.
+%% @private The socket options used
+sockopts(Options) ->
+    [binary, {active, false}, {packet, raw}, {nodelay, true},
+     {send_timeout, gen_hypar_opts:send_timeout(Options)}].
 
+%% @private Close a socket
+close(Socket) ->
+    gen_tcp:close(Socket).
+
+%% Binary messages
+accept()     -> <<?ACCEPT>>.
+decline()    -> <<?DECLINE>>.
 keep_alive() -> <<?KEEPALIVE>>.
+disconnect() -> <<?DISCONNECT>>.
+
+message(Bin) ->
+    <<?MESSAGE, Bin/binary>>.
 
 join(Identifier) ->
     BId = gen_hypar_util:encode_id(Identifier),
@@ -137,11 +155,7 @@ shuffle_reply(XList) ->
     BXList = gen_hypar_util:encode_idlist(XList),
     <<?SHUFFLEREPLY, BXList/binary>>.
 
-%% @doc The socket options used
-sockopts(Options) ->
-    [binary, {active, false}, {packet, raw}, {nodelay, true},
-     {send_timeout, gen_hypar_opts:send_timeout(Options)}].
-
+%% @doc Decode incoming binaries
 decode_msg(<<?MESSAGE, Msg/binary>>) ->
     {message, Msg};
 decode_msg(<<?FORWARDJOIN, BId:?IDSIZE/binary, TTL/integer>>) ->

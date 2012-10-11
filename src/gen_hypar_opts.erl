@@ -12,6 +12,7 @@
          k_passive/1, shuffle_period/1, timeout/1, send_timeout/1, keep_alive/1,
          default/1]).
 
+%% @doc Esthetic functions
 -spec arwl(Opts :: options())           -> pos_integer().
 -spec prwl(Opts :: options())           -> pos_integer().
 -spec active_size(Opts :: options())    -> pos_integer().

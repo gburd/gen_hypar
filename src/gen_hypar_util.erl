@@ -1,7 +1,6 @@
 %% -------------------------------------------------------------------
 %% @author Emil Falk <emil.falk.1988@gmail.com>
 %% @copyright (C) 2012, Emil Falk
-%% @private
 %% @title Utility module, functions that does not fit anywhere else
 %% @doc Utility functions
 -module(gen_hypar_util).
@@ -9,7 +8,7 @@
 -include("gen_hypar.hrl").
 
 %% Registration
--export([wait_for/1, register/2, register_self/1]).
+-export([wait_for/1, register/1]).
 %% Encode/decode
 -export([encode_id/1, decode_id/1, encode_idlist/1, decode_idlist/1]).
 %% Random
@@ -26,14 +25,9 @@ wait_for(Name) ->
     {Pid, _} = gproc:await({n, l, Name}),
     {ok, Pid}.
 
--spec register(Name :: any(), Pid :: pid()) -> yes | no.
-%% @doc Register a process with pid in gproc
-register(Name, Pid) ->
-    gproc:register_name(Name, Pid).
-
--spec register_self(Name :: any()) -> yes | no.
+-spec register(Name :: any()) -> true | false.
 %% @doc Register this process in gproc
-register_self(Name) ->
+register(Name) ->
     gproc:add_local_name(Name).
 
 %%%===================================================================

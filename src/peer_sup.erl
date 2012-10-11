@@ -8,33 +8,40 @@
 -module(peer_sup).
 -behaviour(supervisor).
 
--export([start_link/1, wait_for/1]).
--export([init/1]).
-
 -include("gen_hypar.hrl").
 
+%% Start
+-export([start_link/1]).
+
+%% Coordination
+-export([wait_for/1]).
+
+%% supervisor callback
+-export([init/1]).
+
 -spec start_link(Identifier :: id()) -> {ok, pid()}.
-%% @private Start the peer supervisor
+%% @doc Start the peer supervisor
 start_link(Identifier) ->
-    {ok, Pid} = supervisor:start(?MODULE, [Identifier]),
-    yes = register_peer_sup(Identifier, Pid),
-    {ok, Pid}.
+    supervisor:start_link(?MODULE, [Identifier]).
 
 -spec wait_for(Identifier :: id()) -> {ok, pid()}.
-%% @private Wait for the peer supervisor to start
+%% @doc Wait for the peer supervisor to start
 wait_for(Identifier) ->
     gen_hypar_util:wait_for(name(Identifier)).
 
 init([Identifier]) ->
+    register_peer_sup(Identifier),
     Peer = {peer,
             {peer, start_link, [Identifier]},
             temporary, 5000, supervisor, [peer]},
-    {ok, {simple_one_for_one, 5, 10}, [Peer]}.
+    {ok, {{simple_one_for_one, 5, 10}, [Peer]}}.
 
--spec register_peer_sup(Identifier :: id(), Pid :: pid()) -> yes | no.
-register_peer_sup(Identifier, Pid) ->
-    gen_hypar_util:register(name(Identifier), Pid).
+-spec register_peer_sup(Identifier :: id()) -> boolean().
+%% @doc Register the peer supervisor
+register_peer_sup(Identifier) ->
+    gen_hypar_util:register(name(Identifier)).
 
 -spec name(Identifier :: id()) -> {peer_sup, id()}.
+%% @doc Gproc name of the peer supervisor
 name(Identifier) ->
     {peer_sup, Identifier}.

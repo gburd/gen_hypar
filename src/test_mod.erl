@@ -2,20 +2,37 @@
 -behaviour(gen_hypar).
 -behaviour(gen_server).
 
--export([start/1, bcast/1, start_link/2]).
+-export([test/1, join_them/1, get_peers/1]).
+
+-export([start/1, bcast/2, start_link/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, code_change/3,
          terminate/2]).
 
-start(Port) ->
-    gen_hypar:start_link({{127,0,0,1},Port}, ?MODULE, [], []).
+test(N) ->
+    application:start(ranch),
+    application:start(gproc),
+    [start(local_id(5000+I)) || I <- lists:seq(0,N)].
+
+join_them(N) ->
+    [gen_hypar:join_cluster(local_id(5000+I), local_id(5000)) || I <- lists:seq(1,N)].
+
+get_peers(Port) ->
+    gen_hypar:get_peers(local_id(Port)).
+
+local_id(Port) ->
+    {{127,0,0,1}, Port}.
+
+start(Identifier) ->
+    gen_hypar:start_link(Identifier, ?MODULE, [], []).
 
 start_link(Identifier, _) ->
-    gen_server:start_link({?MODULE, local}, ?MODULE, [Identifier], []).
+    gen_server:start_link(?MODULE, [Identifier], []).
 
-bcast(Msg) ->
-    gen_server:cast(?MODULE, {bcast, Msg}).
+bcast(Port, Msg) ->
+    gen_server:cast(gen_hypar:where(local_id(Port)), {bcast, Msg}).
 
 init([Identifier]) ->
+    ok = gen_hypar:register_and_wait(Identifier),
     {ok, {Identifier, []}}.
 
 handle_call(_,_,S) ->
@@ -32,7 +49,7 @@ handle_info({link_up, {Peer, Pid}=E}, {Id, Peers}) ->
     io:format("Link up~nPeer:~p~nPid:~p~n", [Peer, Pid]),
     {noreply, {Id, [E|Peers]}};
 handle_info({link_down, Peer}, {Id, Peers}) ->
-    io:format("Link down~nPeer:~p~n", Peer),
+    io:format("Link down~nPeer:~p~n", [Peer]),
     {noreply, {Id, lists:keydelete(Peer, 1, Peers)}}.
 
 code_change(_,S,_) ->
@@ -42,4 +59,4 @@ terminate(_, _) ->
     ok.
 
 broadcast(Msg, Peers) ->    
-    [gen_hypar:send(Pid, Msg) || {_, Pid} <- Peers].
+    [gen_hypar:send_message(Pid, Msg) || {_, Pid} <- Peers].
