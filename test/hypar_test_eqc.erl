@@ -1,12 +1,19 @@
 -module(hypar_test_eqc).
+
+-ifdef(TEST).
+-ifdef(EQC).
 -include_lib("eqc/include/eqc.hrl").
 -include_lib("eqc/include/eqc_statem.hrl").
-
 -include_lib("eunit/include/eunit.hrl").
 
 -include("gen_hypar.hrl").
 
--compile([export_all, debug_info]).
+-define(QC_OUT(P),
+        eqc:on_output(fun(Str, Args) ->
+                               io:format(user, Str, Args) end, P)).
+-compile(export_all).
+
+%% @doc  QuickCheck tests for the gen_hypar module
 
 %% Test the node logic
 
@@ -342,3 +349,23 @@ mock_connect() ->
     meck:expect(connect, shuffle_reply, ShuffleReply),
     meck:expect(connect, disconnect, Disconnect),
     meck:expect(connect, terminate, Terminate).
+
+%%====================================================================
+%% Helpers
+%%====================================================================
+
+test() ->
+
+    test(100).
+
+test(N) ->
+
+    quickcheck(numtests(N, prop_chash_next_index())).
+
+check() ->
+
+    check(prop_chash_next_index(), current_counterexample()).
+
+-include("eqc_helper.hrl").
+-endif.
+-endif.

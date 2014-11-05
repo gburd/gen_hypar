@@ -27,6 +27,12 @@ clean:
 distclean: clean
 	$(REBAR) delete-deps
 
+qc: clean all
+	$(REBAR) -C rebar_eqc.config compile eunit skip_deps=true --verbose
+
+eqc-ci: clean all
+	$(REBAR) -D EQC_CI -C rebar_eqc_ci.config compile eunit skip_deps=true --verbose
+
 # You often want *rebuilt* rebar tests to be available to the shell you have to
 # call eunit (to get the tests rebuilt). However, eunit runs the tests, which
 # probably fails (thats probably why You want them in the shell). This

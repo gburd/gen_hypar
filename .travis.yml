@@ -1,0 +1,9 @@
+language: erlang
+script: "make compile && make test"
+notifications:
+  recipients:
+    - greg@burd.me
+otp_release:
+  - 17.0
+  - 17.1
+  - 17.3
