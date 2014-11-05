@@ -1,17 +1,16 @@
 -ifdef(EQC_CI).
--define(OUT(P),  on_output(fun(S,F) ->
-                                    io:fwrite(user, S, F) end, P)).
+-define(OUT(P), on_output(fun(S,F) ->
+                                  io:fwrite(user, S, F) end, P)).
 -else.
 -define(OUT(P),
         on_output(fun
                       (".", []) ->
-
                           io:fwrite(user, <<"\e[0;32m*\e[0m">>, []);
-                                           ("x", []) ->
+                      ("x", []) ->
                           io:format(user, <<"\e[0;33mx\e[0m">>, []);
-                     ("Failed! ", []) ->
+                      ("Failed! ", []) ->
                           io:format(user, <<"\e[0;31mFailed! \e[0m">>, []);
-                     (S, F) ->
+                      (S, F) ->
                           io:format(user, S, F)
                   end, P)).
 -endif.

@@ -8,6 +8,7 @@
 
 -include("gen_hypar.hrl").
 
+-define(TEST_ITERATIONS, 100).
 -define(QC_OUT(P),
         eqc:on_output(fun(Str, Args) ->
                                io:format(user, Str, Args) end, P)).
@@ -355,7 +356,7 @@ test(N) ->
     application:load(gen_hypar),
     application:start(meck),
     timer:sleep(1),
-    quickcheck(numtests(N, prop_hypar_node()).
+    quickcheck(numtests(N, prop_hypar_node())).
 
 check() ->
     check(prop_hypar_node(), current_counterexample()).
