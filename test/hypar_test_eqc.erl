@@ -1,11 +1,10 @@
--module(eqc_hypar_test).
+-module(hypar_test_eqc).
 -include_lib("eqc/include/eqc.hrl").
 -include_lib("eqc/include/eqc_statem.hrl").
 
 -include_lib("eunit/include/eunit.hrl").
 
--include("hyparerl.hrl").
--include("connect.hrl").
+-include("gen_hypar.hrl").
 
 -compile([export_all, debug_info]).
 
@@ -22,7 +21,7 @@
 
 %% Shortcut
 test() ->
-    application:load(hyparerl),
+    application:load(gen_hypar),
     application:start(meck),
     timer:sleep(1),
     eqc:quickcheck(prop_hypar_node()).
@@ -33,11 +32,11 @@ prop_hypar_node() ->
               aggregate(command_names(Cmds),
                         begin
                             mock_connect(),
-                            register(test, self()),                            
+                            register(test, self()),
 
                             {ok, _} = hypar_node:start_link(options()),
-                            {H, S, Res} = run_commands(?MODULE, Cmds),                
-                            
+                            {H, S, Res} = run_commands(?MODULE, Cmds),
+
                             catch hypar_node:stop(),
                             catch unregister(test),
                             ?WHENFAIL(
@@ -112,7 +111,7 @@ postcondition(_, {call, _, error, [Node, _]}, _) ->
     not in_active_view(Node);
 postcondition(S, {call, _, shuffle, [Node, Req, TTL, XList]}, _) ->
     case TTL > 0 andalso length(S#st.active) > 1 of
-        true  -> shuffle_propagated(Node, Req, TTL, XList);            
+        true  -> shuffle_propagated(Node, Req, TTL, XList);
         false -> in_passive_view(XList) andalso
                      shuffle_reply_received(Req)
     end;
@@ -133,7 +132,7 @@ dynamic_precondition(_,_) ->
 precondition(_,_) ->
     true.
 
-invariant(S) ->    
+invariant(S) ->
     Active = lists:usort([Node || {Node,_} <- hypar_node:get_peers()]),
     Model = lists:usort(S#st.active),
     Active =:= Model andalso
@@ -157,7 +156,7 @@ forward_join(Node, TTL) ->
     ok = hypar_node:forward_join(Node, ReqId, TTL),
     ReqId.
 
-%% Do a neighbour request 
+%% Do a neighbour request
 neighbour(Priority) ->
     NodeId = make_node_id(),
     case hypar_node:neighbour(NodeId, Priority) of
@@ -176,7 +175,7 @@ maybe_disconnect(S) ->
             delete_node(DiscNode, S)
     after 0 ->
             S
-    end.    
+    end.
 
 %% After an error, check if the hypar_node has found a new neighbour
 maybe_neighbour(S) ->
@@ -212,8 +211,8 @@ forward_joins_sent(S, Node) ->
         end,
     all(lists:map(F, [To || {To, _} <- hyparerl:get_peers(), To =/= Node])).
 
-%% Check that the forward-join is propagated with correct arguments    
-forward_join_propagated(Node, Req, TTL0) ->    
+%% Check that the forward-join is propagated with correct arguments
+forward_join_propagated(Node, Req, TTL0) ->
     TTL = TTL0-1,
     receive
         {forward_join, To, Req, TTL} ->
@@ -227,7 +226,7 @@ shuffle_propagated(Node, Req, TTL, XList) ->
         {shuffle, To, R, TTL0, XList0} ->
             To =/= Node andalso in_active_view(To) andalso R =:= Req andalso
                 TTL0 =:= TTL-1 andalso XList =:= XList0
-    after 0 ->            
+    after 0 ->
             false
     end.
 
@@ -272,7 +271,7 @@ initial_state() ->
     #st{id=proplists:get_value(id, Opts),
         arwl=proplists:get_value(arwl, Opts),
         prwl=proplists:get_value(prwl, Opts),
-        active_size=proplists:get_value(active_size, Opts),        
+        active_size=proplists:get_value(active_size, Opts),
         passive_size=proplists:get_value(passive_size, Opts),
         xlistsize=Size}.
 
@@ -289,6 +288,8 @@ options() ->
      {send_timeout, infinity},
      {target, eqc_hypar_test}].
 
+-record(peer, {id, conn}).
+
 %% Meck
 mock_connect() ->
     meck:unload(),
@@ -300,7 +301,7 @@ mock_connect() ->
     Join = fun(Id, _) ->
                    {ok, #peer{id=Id, conn=test}}
            end,
-    ForwardJoin = fun(Peer, Req, TTL) -> 
+    ForwardJoin = fun(Peer, Req, TTL) ->
                           test ! {forward_join, Peer#peer.id, Req, TTL}
                   end,
     ForwardJoinReply = fun(Id, _) ->
@@ -313,7 +314,7 @@ mock_connect() ->
                                 {ok, #peer{id=Id, conn=test}};
                             low ->
                                 case random:uniform(2) of
-                                    1 -> 
+                                    1 ->
                                         test ! {neighbour, Id},
                                         {ok, #peer{id=Id, conn=test}};
                                     2 ->
@@ -324,13 +325,13 @@ mock_connect() ->
     Shuffle = fun(Peer, Req, TTL, XList) ->
                       test ! {shuffle, Peer#peer.id, Req, TTL, XList}
               end,
-    ShuffleReply = fun(To, XList, _) -> 
+    ShuffleReply = fun(To, XList, _) ->
                            test ! {shuffle_reply, To, XList}
                    end,
     Disconnect = fun(Peer) ->
                          test ! {disconnect, Peer#peer.id}
-                 end,    
-    
+                 end,
+
     meck:expect(connect, initialize, Init),
     meck:expect(connect, stop, Stop),
     meck:expect(connect, join, Join),

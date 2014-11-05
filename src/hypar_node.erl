@@ -105,7 +105,7 @@ shuffle_reply(HyparNode, ReplyXList) ->
 
 %% Initialize
 init([Identifier, Options]) ->
-    random:seed(now()),    
+    _ = random:seed(now()),
     {ok ,#st{id=Identifier, opts=Options}, 0}.
 
 %% Retrive the peers
@@ -163,7 +163,7 @@ handle_cast({neighbour, Peer, Priority, Socket}, S) ->
             accept_neighbour(Peer, Socket, S);
         %% Low priority request, only accept if we have space in the
         %% nodes active view
-        low ->            
+        low ->
             case length(ActiveV) < gen_hypar_opts:active_size(Options) of
                 true  ->
                     accept_neighbour(Peer, Socket, S);
@@ -174,7 +174,7 @@ handle_cast({neighbour, Peer, Priority, Socket}, S) ->
 
 %% Disconnect an open active connection, add disconnecting node to passive view
 handle_cast({disconnect, Peer}, S) ->
-    #st{activev=ActiveV, passivev=PassiveV, gen_hypar=GenHypar} = S,    
+    #st{activev=ActiveV, passivev=PassiveV, gen_hypar=GenHypar} = S,
     %% Demonitor & link_down
     {Peer, _, MRef} = lists:keyfind(Peer, 1, ActiveV),
     erlang:demonitor(MRef, [flush]),
@@ -190,14 +190,14 @@ handle_cast({forward_join, Peer, NewPeer, TTL}, S0) ->
         true ->
             %% Add to active view, send a join_reply to let the
             %% other node know, check to see that you don't send to yourself
-            accept_forward_join(NewPeer, S0);                
+            accept_forward_join(NewPeer, S0);
         false ->
             %% Add to passive view if TTL is equal to PRWL
             S1 = case TTL =:= gen_hypar_opts:prwl(Options) of
                      true  -> add_passive_peer(NewPeer, S0);
                      false -> S0
                  end,
-            
+
             %% Propagate the forward join using a random walk
             AllBut = remove_active(Peer, ActiveV),
             {_, Pid, _} = gen_hypar_util:random_elem(AllBut),
@@ -250,7 +250,7 @@ handle_info(shuffle, S) ->
         %% No active peers to send shuffle to
         true ->
             {noreply, S#st{last_xlist=[]}};
-        
+
         %% Send the shuffle to a random peer
         false ->
             {_,Pid, _} = gen_hypar_util:random_elem(ActiveV),
@@ -341,10 +341,10 @@ add_active_peer(Peer, Socket, S0) ->
             true  -> drop_random_active(S0);
             false -> S0
         end,
-    
+
     {ok, Pid} = peer:new(PeerSup, Myself, Peer, Socket, GenHypar, Options),
     MRef = erlang:monitor(process, Pid),
-    
+
     S#st{activev=add_active({Peer, Pid, MRef}, S#st.activev),
          passivev=remove_passive(Peer, S#st.passivev)}.
 
@@ -362,7 +362,7 @@ drop_random_active(S) ->
     gen_hypar:link_down(GenHypar, Peer),
     ok = peer:disconnect(Pid),
     erlang:demonitor(MRef, [flush]),
-    
+
     S#st{activev=ActiveV, passivev=PassiveV}.
 
 -spec find_new_active(#st{}) -> #st{}.
@@ -496,7 +496,7 @@ add_xlist(S, XList0, ReplyList) ->
     %% Filter out ourselves and nodes in active and passive view
     PeerOK = fun(Peer) -> peer_ok(Peer, Myself, ActiveV, PassiveV0) end,
     XList = lists:filter(PeerOK, XList0),
-    
+
     %% If we need slots then first drop nodes from ReplyList then at random
     Slots = length(PassiveV0)-gen_hypar_opts:passive_size(Options)+length(XList),
     PassiveV = free_slots(Slots, PassiveV0, ReplyList),
@@ -515,7 +515,7 @@ create_xlist(S) ->
     [Myself | (RandomA ++ RandomP)].
 
 %%%===================================================================
-%%% Auxillary functions 
+%%% Auxillary functions
 %%%===================================================================
 
 -spec get_priority(active_view()) -> priority().
@@ -543,7 +543,7 @@ free_slots(I, List, [R|Rs]) ->
 
 -spec register_hypar_node(id()) -> true.
 %% @doc Register a hypar node
-register_hypar_node(Identifier) ->    
+register_hypar_node(Identifier) ->
     gen_hypar_util:register(name(Identifier)).
 
 -spec wait_for(id()) -> {ok, pid()}.

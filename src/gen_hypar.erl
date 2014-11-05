@@ -13,10 +13,10 @@
 %%
 %%      This is needed to make sure that all processes are synchronized and
 %%      that the process should be reachable from outside.
-%% 
+%%
 %%      The process can then use join_cluster to join a cluster, after that
 %%      it will start to receive messages on the form:
-%%      
+%%
 %%         {message, From :: id(), Msg :: binary()}
 %%         {link_up, {Peer :: id(), SendPid :: pid()}}
 %%         {link_down, Peer :: id()}
@@ -102,8 +102,7 @@ deliver(GenHypar, Peer, Msg) ->
 -spec link_up(pid(), id(), pid()) -> {link_up, peer()}.
 %% @private Used by the send process to signal a new link
 link_up(GenHypar, Peer, Pid) ->
-    GenHypar ! {link_up, {Peer, Pid}},
-    ok.
+    GenHypar ! {link_up, {Peer, Pid}}.
 
 -spec link_down(pid(), id()) -> {link_down, id()}.
 %% @private When a peer either disconnects or fails

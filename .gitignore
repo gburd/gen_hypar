@@ -1,5 +1,10 @@
 
 .eunit
+.local_dialyzer_plt
+.rebar
+dialyzer_unhandled_warnings
+dialyzer_warnings
+dialyzer.ignore-warnings
 deps
 priv
 *.o
@@ -9,4 +14,5 @@ priv
 #*
 .#*
 *.dump
+ebin
 ebin/hyparerl.app
