@@ -1,5 +1,7 @@
 #gen_hypar
 ---------
+[<img src="http://quickcheck-ci.com/p/gburd/gen_hypar.png" alt="Build Status" width="160px">](http://quickcheck-ci.com/p/gburd/gen_hypar)</img>]
+
 This is an implementation in Erlang of the [Hybrid Partial View][] membership protocol by João Leitão, José Pereira and Luís Rodrogies.
 
 [Hybrid Partial View]: http://docs.di.fc.ul.pt/jspui/bitstream/10455/2981/1/07-13.pdf

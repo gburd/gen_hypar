@@ -1,4 +1,4 @@
-{build, "make"}.
+{build, "rebar get-deps; rebar compile; cd test; erl -noshell -DEQC -DTEST -eval \"make:all([{parse_transform, eqc_cover}, {i, '../include'}, {outdir, '../ebin'}, {d, 'EQC'}, {d, 'TEST'}])\" -s init stop"}.
 {test_path, "ebin"}.
 {deps, "deps"}.
 {test_root, "test"}.
