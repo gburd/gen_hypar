@@ -26,12 +26,6 @@
              xlistsize
             }).
 
-%% Shortcut
-test() ->
-    application:load(gen_hypar),
-    application:start(meck),
-    timer:sleep(1),
-    eqc:quickcheck(prop_hypar_node()).
 
 %% Property
 prop_hypar_node() ->
@@ -355,16 +349,16 @@ mock_connect() ->
 %%====================================================================
 
 test() ->
-
     test(100).
 
 test(N) ->
-
-    quickcheck(numtests(N, prop_chash_next_index())).
+    application:load(gen_hypar),
+    application:start(meck),
+    timer:sleep(1),
+    quickcheck(numtests(N, prop_hypar_node()).
 
 check() ->
-
-    check(prop_chash_next_index(), current_counterexample()).
+    check(prop_hypar_node(), current_counterexample()).
 
 -include("eqc_helper.hrl").
 -endif.
