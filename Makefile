@@ -31,7 +31,7 @@ qc: clean all
 	$(REBAR) -C rebar_eqc.config compile eunit skip_deps=true --verbose
 
 eqc-ci: clean all
-	$(REBAR) -D EQC_CI -D EQC -D TEST -C rebar_eqc_ci.config compile skip_deps=true --verbose
+	$(REBAR) -D EQC_CI -D EQC -D TEST -C rebar_eqc_ci.config compile --verbose
 
 # You often want *rebuilt* rebar tests to be available to the shell you have to
 # call eunit (to get the tests rebuilt). However, eunit runs the tests, which
