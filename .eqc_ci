@@ -1,4 +1,4 @@
 %-*-Erlang-*-
 {build, "make eqc-ci"}.
 {test_path, "ebin"}.
-{deps, "deps/*/ebin"}.
+{deps, "deps/meck/ebin"}.
