@@ -295,7 +295,7 @@ options() ->
 %% Meck
 mock_connect() ->
     meck:unload(),
-    meck:new(connect),
+    meck:new(connect,[non_strict]),
 
     Init = fun(_) -> ok end,
     Stop = fun() -> ok end,
