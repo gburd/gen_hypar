@@ -2,3 +2,5 @@
 {build, "make eqc-ci"}.
 {test_path, "ebin"}.
 {deps, "deps/meck/ebin"}.
+{deps, "deps/gproc/ebin"}.
+{deps, "deps/ranch/ebin"}.
