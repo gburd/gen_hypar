@@ -35,6 +35,8 @@ prop_hypar_node() ->
 		 aggregate(command_names(Cmds),
 			   begin
 			       mock_connect(),
+			       application:start(ranch),
+			       application:start(gproc),
 			       catch unregister(test),   %% make sure register succeeds
 			       register(test, self()),
 			       {ok, HyparNode} = hypar_node:start_link(
