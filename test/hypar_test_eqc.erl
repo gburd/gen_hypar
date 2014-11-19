@@ -37,9 +37,11 @@ prop_hypar_node() ->
 			       mock_connect(),
 			       catch unregister(test),   %% make sure register succeeds
 			       register(test, self()),
-			       {ok, _} = hypar_node:start_link(
+			       {ok, HyparNode} = hypar_node:start_link(
 					   proplists:get_value(id, options()), 
 					   options()),
+			       catch unregister(hypar),
+			       register(hypar,HyparNode),
 			       {H, S, Res} = run_commands(?MODULE, Cmds),
 			       
 			       catch hypar_node:stop(),
@@ -138,7 +140,7 @@ precondition(_,_) ->
     true.
 
 invariant(S) ->
-    Active = lists:usort([Node || {Node,_} <- hypar_node:get_peers()]),
+    Active = lists:usort([Node || {Node,_} <- hypar_node:get_peers(whereis(hypar))]),
     Model = lists:usort(S#st.active),
     Active =:= Model andalso
         length(Active) =< S#st.active_size.
