@@ -30,6 +30,12 @@
 
 %% Property
 prop_hypar_node() ->
+    ?SETUP(fun() ->
+		   application:load(gen_hypar),
+		   application:start(meck),
+		   timer:sleep(1),
+		   fun() -> ok end
+	   end,
       ?FORALL(Cmds, commands(?MODULE),
               ?TRAPEXIT(
 		 aggregate(command_names(Cmds),
@@ -53,7 +59,7 @@ prop_hypar_node() ->
 				  Res == ok
 				 )
 			   end
-			  ))).
+			  )))).
 
 %% Commands
 command(S) ->
