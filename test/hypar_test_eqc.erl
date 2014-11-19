@@ -34,9 +34,11 @@ prop_hypar_node() ->
               aggregate(command_names(Cmds),
                         begin
                             mock_connect(),
+			    catch unregister(test),   %% make sure register succeeds
                             register(test, self()),
-
-                            {ok, _} = hypar_node:start_link(options()),
+			    {ok, _} = hypar_node:start_link(
+					proplists:get_value(id, options()), 
+					options()),
                             {H, S, Res} = run_commands(?MODULE, Cmds),
 
                             catch hypar_node:stop(),
