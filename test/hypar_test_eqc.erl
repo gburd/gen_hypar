@@ -30,23 +30,36 @@
 
 %% Property
 prop_hypar_node() ->
+    ?SETUP(fun() ->
+		   application:load(gen_hypar),
+		   application:start(meck),
+		   timer:sleep(1),
+		   fun() -> ok end
+	   end,
       ?FORALL(Cmds, commands(?MODULE),
-              aggregate(command_names(Cmds),
-                        begin
-                            mock_connect(),
-                            register(test, self()),
-
-                            {ok, _} = hypar_node:start_link(options()),
-                            {H, S, Res} = run_commands(?MODULE, Cmds),
-
-                            catch hypar_node:stop(),
-                            catch unregister(test),
-                            ?WHENFAIL(
-                               io:format("Hist: ~p~nState: ~p~n Res: ~p~n", [H, S, Res]),
-                               Res == ok
-                            )
-                        end
-                       )).
+              ?TRAPEXIT(
+		 aggregate(command_names(Cmds),
+			   begin
+			       mock_connect(),
+			       application:start(ranch),
+			       application:start(gproc),
+			       catch unregister(test),   %% make sure register succeeds
+			       register(test, self()),
+			       {ok, HyparNode} = hypar_node:start_link(
+					   proplists:get_value(id, options()), 
+					   options()),
+			       catch unregister(hypar),
+			       register(hypar,HyparNode),
+			       {H, S, Res} = run_commands(?MODULE, Cmds),
+			       
+			       catch hypar_node:stop(),
+			       catch unregister(test),
+			       ?WHENFAIL(
+				  io:format("Hist: ~p~nState: ~p~n Res: ~p~n", [H, S, Res]),
+				  Res == ok
+				 )
+			   end
+			  )))).
 
 %% Commands
 command(S) ->
@@ -135,7 +148,7 @@ precondition(_,_) ->
     true.
 
 invariant(S) ->
-    Active = lists:usort([Node || {Node,_} <- hypar_node:get_peers()]),
+    Active = lists:usort([Node || {Node,_} <- hypar_node:get_peers(whereis(hypar))]),
     Model = lists:usort(S#st.active),
     Active =:= Model andalso
         length(Active) =< S#st.active_size.
@@ -295,7 +308,7 @@ options() ->
 %% Meck
 mock_connect() ->
     meck:unload(),
-    meck:new(connect),
+    meck:new(connect,[non_strict]),
 
     Init = fun(_) -> ok end,
     Stop = fun() -> ok end,
